@@ -44,7 +44,7 @@ QC.define('theme', function (QC) {
     var root = document.documentElement;
     root.classList.add('theme-anim');
     clearTimeout(fadeTimer);
-    fadeTimer = setTimeout(function () { root.classList.remove('theme-anim'); }, 400);
+    fadeTimer = setTimeout(function () { root.classList.remove('theme-anim'); }, 260);
     store(next === system() ? null : next);
     apply();
   }

@@ -18,14 +18,18 @@ QC.define('panel', function (QC) {
   var SHOW_CHARS = 200e3;    // how much result text to show
   var TABLE_COLS = 50;
   var EXT_ALIAS = { jpeg: 'jpg', jpe: 'jpg', jfif: 'jpg', htm: 'html', markdown: 'md', text: 'txt' };
+  var docHeight = null;      // height of the document boxes, shared by every file (drag handle)
 
   /*
    * ctx: { onChange(item), onTarget(item), onRename(item), onClose(), onApplyAll(item, keepSize) -> count,
    *        copyLabel(item), outputs(item), outputName(item), sourceFile(item), settingsKey(item),
    *        jobOptions(item), formatBytes(n), percentChange(a, b) }
    * host: the file's row (phones) or the side column (wide screens). mount() moves the panel.
+   * opts.startPicture: the previous panel's picture, shown until this file's preview is ready.
    */
-  function open(item, host, ctx) {
+  function open(item, host, ctx, opts) {
+    opts = opts || {};
+    var ready = false;       // set after the first fill; from then on parts appear with motion
     var root = document.getElementById('tpl-panel').content.firstElementChild.cloneNode(true);
     host.appendChild(root);
     var isImage = item.kind === 'image';
@@ -35,7 +39,7 @@ QC.define('panel', function (QC) {
       copy: $('.copy-all'), reset: $('.reset'), headMain: $('.head-main'),
       confirm: $('.head-confirm'), confirmQ: $('.confirm-question'),
       bgField: $('[data-show="background"]'), bgPicks: root.querySelectorAll('.bg-pick'),
-      bgColor: $('.bg-color'), bgChip: $('.bg-custom-chip'), bgHint: $('.bg-hint'),
+      bgCustom: $('.bg-custom'), bgChip: $('.bg-custom .bg-custom-chip'), bgHint: $('.bg-hint'),
       body: $('.panel-body'), settings: $('.panel-settings'), previewCol: $('.panel-preview'),
       target: $('.p-target'),
       qField: $('[data-show="quality"]'), qRange: $('.q-range'), qNum: $('.q-num'), qFound: $('.q-found'),
@@ -44,7 +48,12 @@ QC.define('panel', function (QC) {
       modes: root.querySelectorAll('.r-mode'), rPercent: $('.r-percent'), rPct: $('.r-pct'),
       rPixels: $('.r-pixels'), rW: $('.r-w'), rH: $('.r-h'), rLock: $('.r-lock'), rInfo: $('.r-info'),
       rs: $('.rs'), stats: $('.preview-stats'),
-      docSrc: $('.doc-src'), docSrcView: $('.doc-src-view'), docSrcNote: $('.doc-src-note'),
+      doc: $('.panel-doc'), docGrip: $('.doc-grip'),
+      pageField: $('[data-show="page"]'), pgPicks: root.querySelectorAll('.pg-pick'), pgCustom: $('.pg-custom'), pgChip: $('.pg-custom .pg-chip'),
+      fontField: $('[data-show="font"]'), fontSel: $('.pg-font'), fontSearch: $('.font-search'), fontName: $('.font-name'),
+      fontResults: $('.font-results'),
+      fontNote: $('.font-note'),
+      docEdit: $('.doc-edit'), docSrc: $('.doc-src'), docSrcView: $('.doc-src-view'), docSrcNote: $('.doc-src-note'),
       docOut: $('.doc-out'), docOutNote: $('.doc-out-note')
     };
     root.querySelectorAll('[data-image]').forEach(function (n) { n.hidden = !isImage; });
@@ -55,6 +64,7 @@ QC.define('panel', function (QC) {
     el.modes.forEach(function (r) { r.name = 'resize-' + item.id; });
     el.tModes.forEach(function (r) { r.name = 'size-' + item.id; });
     el.bgPicks.forEach(function (r) { r.name = 'bg-' + item.id; });
+    el.pgPicks.forEach(function (r) { r.name = 'pg-' + item.id; });
     el.copy.textContent = ctx.copyLabel(item);
     $('.panel-close').addEventListener('click', function () { ctx.onClose(); });
     var outputs = ctx.outputs(item);
@@ -78,7 +88,8 @@ QC.define('panel', function (QC) {
     }
     el.pName.addEventListener('input', function () { setName(); });
 
-    var compare = isImage ? QC.preview.create($('.preview-host'), { maxHeight: previewMaxHeight, controls: $('.zoom-slot') }) : null;
+    var compare = isImage ? QC.preview.create($('.preview-host'),
+      { maxHeight: previewMaxHeight, controls: $('.zoom-slot'), start: opts.startPicture }) : null;
     var timer = null, generation = 0, closed = false;
     var fast = null, exact = null, exactBusy = false, exactProgress = 0, previewError = '';
     var docToken = 0;
@@ -105,6 +116,15 @@ QC.define('panel', function (QC) {
 
     /* ----- fields <-> settings ----- */
 
+    // Show / hide parts: pairs of [element, visible]. After opening, parts appear and
+    // disappear with motion and the panel's height follows (js/ui/motion.js).
+    function show(pairs) {
+      var needed = pairs.some(function (p) { return p[0].hidden === p[1]; });
+      function apply() { pairs.forEach(function (p) { p[0].hidden = !p[1]; }); }
+      if (needed && ready) QC.motion.morph(root, apply);
+      else apply();
+    }
+
     function lossy() { return !!QC.image.LOSSY[item.target]; }
 
     function setFill(range) {
@@ -125,10 +145,14 @@ QC.define('panel', function (QC) {
         el.rs.value = s.resample;
         var preset = s.background === '#ffffff' || s.background === '#000000';
         el.bgPicks.forEach(function (r) { r.checked = preset ? r.value === s.background : r.value === 'custom'; });
-        if (!preset) el.bgColor.value = s.background;
-        el.bgChip.style.setProperty('--c', el.bgColor.value);
+        if (!preset) el.bgChip.style.setProperty('--c', s.background);
       } else {
         el.reset.disabled = item.editedText == null;
+        var pg = item.page, presets = Array.prototype.map.call(el.pgPicks, function (r) { return r.value; });
+        var preset = presets.indexOf(pg.background) !== -1;
+        el.pgPicks.forEach(function (r) { r.checked = preset ? r.value === pg.background : r.value === 'custom'; });
+        if (!preset) el.pgChip.style.setProperty('--c', pg.background);
+        showFont(pg.font);
       }
       sync();
     }
@@ -139,17 +163,24 @@ QC.define('panel', function (QC) {
         ' · ' + ctx.formatBytes(item.file.size) + ' · from ' + item.file.name;
       el.sub.title = el.sub.textContent;
       if (document.activeElement !== el.pName) setName(ctx.outputName(item));
-      if (!isImage) return;
+      if (!isImage) {
+        var html = item.target === 'html';
+        show([[el.pageField, html], [el.fontField, html], [el.fontSearch, html && el.fontSel.value === 'search'],
+          [el.fontNote, html && !!el.fontNote.textContent]]);
+        return;
+      }
       var ico = item.target === 'ico';
-      el.qField.hidden = !lossy();
-      el.tField.hidden = ico;
-      el.tInputs.hidden = !s.targetOn;
-      // Only when the picture really has transparent areas and the format can't keep them.
-      el.bgField.hidden = !(item.hasAlpha && QC.image.NO_ALPHA[item.target]);
       el.bgHint.textContent = QC.formats.get(item.target).label + ' has no transparency, so transparent areas get this colour.';
       renderQuality(s.targetOn && !ico && lossy());
-      el.rPercent.hidden = s.resizeMode !== 'percent';
-      el.rPixels.hidden = s.resizeMode !== 'pixels';
+      show([
+        [el.qField, lossy()],
+        [el.tField, !ico],
+        [el.tInputs, s.targetOn],
+        // Only when the picture really has transparent areas and the format can't keep them.
+        [el.bgField, !!(item.hasAlpha && QC.image.NO_ALPHA[item.target])],
+        [el.rPercent, s.resizeMode === 'percent'],
+        [el.rPixels, s.resizeMode === 'pixels']
+      ].concat(renderTargetNotes()));
       el.rLock.setAttribute('aria-pressed', String(!!s.lockAspect));
       el.rLock.classList.toggle('is-on', !!s.lockAspect);
 
@@ -165,7 +196,6 @@ QC.define('panel', function (QC) {
         // Below a file (phones), tall pictures may use more of the screen height.
         root.classList.toggle('is-portrait', out.height > out.width * 1.1);
       }
-      renderTargetNotes();
       renderStats();
       compare.layout(); // the panel's height may have changed
     }
@@ -180,10 +210,10 @@ QC.define('panel', function (QC) {
       if (document.activeElement !== el.qNum || byTarget) el.qNum.value = q;
     }
 
+    // Sets the notes' text; returns their visibility for show().
     function renderTargetNotes() {
       var active = s.targetOn && item.target !== 'ico' && QC.image.targetBytes(s) > 0;
       var q = exact && exact.quality ? exact.quality : null;
-      el.qFound.hidden = !(s.targetOn && lossy());
       if (s.targetOn && lossy()) {
         el.qFound.textContent = !active ? 'Set by the target size.'
           : q ? 'Quality found for the target: ' + q
@@ -201,9 +231,9 @@ QC.define('panel', function (QC) {
           ctx.formatBytes(exact.blob.size) + (exact.mode === 'quality' ? ' at quality 1' : ' at 1% size') +
           '. Raise the target or resize the image.';
       }
-      el.tNote.textContent = note;
-      el.tNote.hidden = !note;
+      if (note) el.tNote.textContent = note;
       el.tNote.classList.toggle('is-warn', !!(exact && exact.unreachable && active));
+      return [[el.qFound, s.targetOn && lossy()], [el.tNote, !!note]];
     }
 
     function renderStats() {
@@ -238,8 +268,8 @@ QC.define('panel', function (QC) {
     /* ----- output name ----- */
 
     function setNameNote(text) {
-      el.nameNote.textContent = text || '';
-      el.nameNote.hidden = !text;
+      if (text) el.nameNote.textContent = text;
+      show([[el.nameNote, !!text]]);
     }
 
     // "photo.webp" -> name "photo", format WebP (when this file can become WebP).
@@ -313,20 +343,13 @@ QC.define('panel', function (QC) {
     el.bgPicks.forEach(function (r) {
       r.addEventListener('change', function () {
         if (!r.checked) return;
-        s.background = r.value === 'custom' ? el.bgColor.value : r.value;
+        if (r.value === 'custom') pickCustom(el.bgCustom, el.bgChip, el.bgPicks, applyBg); // keyboard
+        s.background = r.value === 'custom' ? customColor(el.bgChip) : r.value;
         changed();
       });
     });
-    // The custom swatch always opens the colour picker (also when it's already chosen).
-    $('.swatch-custom').addEventListener('click', function (e) {
-      if (e.target.tagName !== 'INPUT') el.bgColor.click();
-    });
-    el.bgColor.addEventListener('input', function () {
-      s.background = el.bgColor.value;
-      el.bgChip.style.setProperty('--c', el.bgColor.value);
-      el.bgPicks.forEach(function (r) { r.checked = r.value === 'custom'; });
-      changed();
-    });
+    function applyBg(c) { s.background = c; changed(); }
+    customSwatch(el.bgCustom, el.bgChip, el.bgPicks, applyBg);
 
     el.modes.forEach(function (r) {
       r.addEventListener('change', function () {
@@ -397,6 +420,7 @@ QC.define('panel', function (QC) {
     function closeConfirm() {
       if (el.confirm.hidden) return;
       el.confirm.hidden = true;
+      el.headMain.classList.add('is-back'); // fades back in (only after the question)
       el.headMain.hidden = false;
       document.removeEventListener('keydown', onConfirmKey);
       el.copy.focus();
@@ -459,21 +483,185 @@ QC.define('panel', function (QC) {
     }
 
     // Converted HTML in a sandboxed frame: no scripts, no access to this page.
+    // Shown exactly as it will be saved (its own background, text colour and font), whatever
+    // the site theme. Sandboxed: no scripts, no access to this page.
     function renderHtml(box, html) {
       box.textContent = '';
-      var css = getComputedStyle(document.documentElement);
       var frame = document.createElement('iframe');
       frame.setAttribute('sandbox', '');
       frame.title = 'Converted page';
-      frame.srcdoc = html.replace('</head>', '<style>body{background:' + css.getPropertyValue('--bg') +
-        ';color:' + css.getPropertyValue('--text') + '}a{color:inherit}</style></head>');
+      frame.srcdoc = html;
       box.appendChild(frame);
     }
+
+    /* ----- HTML output: page background and font ----- */
+
+    function pageChanged() {
+      ctx.onChange(item);
+      sync();
+      schedule();
+    }
+
+    function setFontNote(text, warn) {
+      el.fontNote.textContent = text || '';
+      el.fontNote.classList.toggle('is-warn', !!warn);
+    }
+
+    function noteForFont() {
+      setFontNote(/^g:/.test(item.page.font) ? 'Loaded from Google Fonts when the page is opened.' : '');
+    }
+
+
+    // A custom colour swatch opens the colour picker (js/ui/colorpicker.js); colours apply live
+    // as they're picked. The swatch's radio covers it, so its click is stopped before it ticks.
+    function customColor(chip) { return chip.style.getPropertyValue('--c').trim() || '#3a6ea5'; }
+    function pickCustom(label, chip, radios, apply) {
+      QC.colorPicker.open(label, customColor(chip), function (hex) {
+        chip.style.setProperty('--c', hex);
+        radios.forEach(function (r) { r.checked = r.value === 'custom'; });
+        apply(hex);
+      });
+    }
+    function customSwatch(label, chip, radios, apply) {
+      label.addEventListener('click', function (e) {
+        e.preventDefault();
+        pickCustom(label, chip, radios, apply);
+      });
+    }
+
+    el.pgPicks.forEach(function (r) {
+      r.addEventListener('change', function () {
+        if (!r.checked) return;
+        if (r.value === 'custom') pickCustom(el.pgCustom, el.pgChip, el.pgPicks, applyPage); // keyboard
+        item.page.background = r.value === 'custom' ? customColor(el.pgChip) : r.value;
+        pageChanged();
+      });
+    });
+    function applyPage(c) { item.page.background = c; pageChanged(); }
+    customSwatch(el.pgCustom, el.pgChip, el.pgPicks, applyPage);
+
+    /* Font: three built-in fonts, or any Google Fonts family found by searching part of its name
+       (list in js/ui/google-fonts.js, loaded the first time the search opens). */
+
+    // Put the chosen Google font in the menu, so the menu shows what's used.
+    function showFont(font) {
+      var old = el.fontSel.querySelector('option[data-google]');
+      if (old) old.remove();
+      var name = /^g:/.test(font) ? font.slice(2) : '';
+      if (name) {
+        var opt = document.createElement('option');
+        opt.value = font;
+        opt.textContent = name + ' (Google Fonts)';
+        opt.dataset.google = '1';
+        el.fontSel.insertBefore(opt, el.fontSel.querySelector('option[value="search"]'));
+      }
+      el.fontSel.value = font;
+      if (el.fontSel.value !== font) el.fontSel.value = 'system';
+    }
+
+    var fontList = null, hits = [], active = 0;
+
+    function findFonts(q) {
+      q = q.trim().toLowerCase();
+      if (!q || !fontList) return [];
+      var starts = [], contains = [];
+      for (var i = 0; i < fontList.length && starts.length < 8; i++) {
+        var parts = fontList[i].split('|'), lower = parts[0].toLowerCase();
+        var entry = { name: parts[0], cat: parts[1], bold: parts[2] === 'b' };
+        if (lower.indexOf(q) === 0 || lower.indexOf(' ' + q) !== -1) starts.push(entry);
+        else if (contains.length < 8 && lower.indexOf(q) !== -1) contains.push(entry);
+      }
+      return starts.concat(contains).slice(0, 8);  // name starts first, each most popular first
+    }
+
+    var CATS = { s: 'Sans serif', r: 'Serif', d: 'Display', h: 'Handwriting', m: 'Monospace' };
+    function renderHits() {
+      el.fontResults.textContent = '';
+      hits.forEach(function (f, i) {
+        var li = document.createElement('li');
+        li.setAttribute('role', 'option');
+        li.setAttribute('aria-selected', String(i === active));
+        li.className = i === active ? 'is-active' : '';
+        var n = document.createElement('span'); n.textContent = f.name;
+        var c = document.createElement('span'); c.className = 'muted'; c.textContent = CATS[f.cat] || '';
+        li.appendChild(n); li.appendChild(c);
+        li.addEventListener('pointerdown', function (e) { e.preventDefault(); chooseFont(f); });
+        el.fontResults.appendChild(li);
+      });
+      var q = el.fontName.value.trim();
+      if (q && !hits.length && fontList) {
+        var none = document.createElement('li');
+        none.className = 'muted font-none';
+        none.textContent = 'No Google font matches “' + q + '”.';
+        el.fontResults.appendChild(none);
+      }
+      var open = !!el.fontResults.children.length;
+      el.fontResults.hidden = !open;
+      el.fontName.setAttribute('aria-expanded', String(open));
+    }
+
+    function chooseFont(f) {
+      item.page.font = 'g:' + f.name;
+      item.page.weights = f.bold;
+      el.fontName.value = '';
+      hits = [];
+      renderHits();
+      showFont(item.page.font);
+      noteForFont();
+      pageChanged();
+    }
+
+    function openSearch() {
+      setFontNote('');
+      sync();
+      el.fontName.focus();
+      if (!fontList) {
+        QC.loadScript('js/ui/google-fonts.js').then(function () {
+          fontList = QC.googleFonts || [];
+          hits = findFonts(el.fontName.value);
+          renderHits();
+        }, function () { setFontNote('Couldn\'t load the font list.', true); sync(); });
+      }
+    }
+
+    el.fontSel.addEventListener('change', function () {
+      if (el.fontSel.value === 'search') { openSearch(); return; }
+      item.page.font = el.fontSel.value;
+      item.page.weights = false;
+      showFont(item.page.font);
+      noteForFont();
+      pageChanged();
+    });
+
+    el.fontName.addEventListener('input', function () {
+      hits = findFonts(el.fontName.value);
+      active = 0;
+      renderHits();
+    });
+    el.fontName.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        if (!hits.length) return;
+        active = (active + (e.key === 'ArrowDown' ? 1 : hits.length - 1)) % hits.length;
+        renderHits();
+        e.preventDefault();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (hits[active]) chooseFont(hits[active]);       // Enter early: the first (best) match
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        el.fontName.value = '';
+        hits = [];
+        renderHits();
+        showFont(item.page.font);
+        sync();
+      }
+    });
+    el.fontName.addEventListener('blur', function () { hits = []; renderHits(); });
 
     async function loadSource() {
       if (TEXT_TYPES[item.type]) {
         var big = item.file.size > EDIT_LIMIT;
-        el.docSrc.hidden = false;
+        el.docEdit.hidden = false;
         el.docSrcView.hidden = true;
         el.docSrc.readOnly = big;
         var text = item.editedText != null ? item.editedText
@@ -485,7 +673,7 @@ QC.define('panel', function (QC) {
         return;
       }
       // Spreadsheets: a table of the first sheet.
-      el.docSrc.hidden = true;
+      el.docEdit.hidden = true;
       el.docSrcView.hidden = false;
       el.docSrcNote.textContent = 'Reading…';
       try {
@@ -531,6 +719,33 @@ QC.define('panel', function (QC) {
         el.docOutNote.textContent = '';
       }
     }
+
+    function setDocHeight(h) {
+      docHeight = Math.max(140, Math.min(1400, Math.round(h)));
+      el.doc.style.setProperty('--doc-h', docHeight + 'px');
+    }
+    if (docHeight) setDocHeight(docHeight);
+    el.docGrip.addEventListener('pointerdown', function (e) {
+      e.preventDefault();
+      var startY = e.clientY, startH = el.docOut.offsetHeight;
+      try { el.docGrip.setPointerCapture(e.pointerId); } catch (err) { /* pointer gone */ }
+      function move(ev) { setDocHeight(startH + ev.clientY - startY); }
+      function up() {
+        el.docGrip.removeEventListener('pointermove', move);
+        el.docGrip.removeEventListener('pointerup', up);
+        el.docGrip.removeEventListener('pointercancel', up);
+      }
+      el.docGrip.addEventListener('pointermove', move);
+      el.docGrip.addEventListener('pointerup', up);
+      el.docGrip.addEventListener('pointercancel', up);
+    });
+    el.docGrip.addEventListener('keydown', function (e) {
+      var step = e.shiftKey ? 80 : 20;
+      if (e.key === 'ArrowUp') setDocHeight(el.docOut.offsetHeight - step);
+      else if (e.key === 'ArrowDown') setDocHeight(el.docOut.offsetHeight + step);
+      else return;
+      e.preventDefault();
+    });
 
     el.docSrc.addEventListener('input', function () {
       item.editedText = el.docSrc.value;
@@ -624,6 +839,7 @@ QC.define('panel', function (QC) {
     function close() {
       closed = true;
       clearTimeout(timer);
+      QC.colorPicker.close();
       document.removeEventListener('keydown', onConfirmKey);
       QC.pool.cancel(function (j) { return j.owner === item.id && /^(prepare|preview|exact|doc|docsrc):/.test(j.key || ''); });
       if (compare) compare.destroy();
@@ -641,6 +857,10 @@ QC.define('panel', function (QC) {
     // The copy button says "all" or "selected" depending on the file selection.
     function updateCopy() { el.copy.textContent = ctx.copyLabel(item); }
 
+    // What the preview shows right now, for the next panel to start from.
+    function picture() { return compare ? compare.picture() : null; }
+
+    if (!isImage) noteForFont();
     fill();
     if (isImage) {
       prepare();
@@ -648,7 +868,8 @@ QC.define('panel', function (QC) {
       loadSource();
       schedule(true);
     }
-    return { close: close, refresh: refresh, mount: mount, updateCopy: updateCopy, root: root };
+    ready = true;
+    return { close: close, refresh: refresh, mount: mount, updateCopy: updateCopy, picture: picture, root: root };
   }
 
   return { open: open };

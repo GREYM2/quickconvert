@@ -8,7 +8,8 @@ A small file converter that runs entirely in the browser. Files never leave your
 - Add files by dropping, choosing, or pasting (Ctrl+V)
 - Per-image settings: output format, quality (slider or number), file size (auto or a target), background colour for transparent pictures going to JPG/BMP, resize (percent or pixels), resampling
 - Live before/after preview: drag the divider, scroll to zoom, drag to move, pinch on touch screens, full-screen view
-- Documents: see and edit the original text, with a live view of the result (table, text or rendered HTML)
+- Documents: see and edit the original text, with a live view of the result (table, text or rendered HTML); one handle resizes both boxes
+- HTML output: page background (text colour adjusts automatically) and font: three built-in fonts, or search all Google Fonts by part of the name
 - Rename the output by editing the name at the top of the settings; ending it with another extension (e.g. `.webp`) switches the format
 - Ctrl/Shift-click files to choose which ones Convert and "Copy settings" apply to (Ctrl+A selects all, Esc clears)
 - "Copy settings" asks first before copying an exact pixel size to other images
@@ -57,6 +58,9 @@ js/convert/zip.js       minimal ZIP writer (stored, no compression)
 js/ui/panel.js          settings panel (any file): image preview pipeline, document view and editing
 js/ui/preview.js        before/after canvas: divider, zoom and pan, full-screen view
 js/ui/theme.js          light/dark toggle (follows the system by default)
+js/ui/motion.js         animation helpers: panel morph, layout glide, fold away (off with reduced motion)
+js/ui/colorpicker.js    colour picker pop-up (square + hue slider + hex + recent colours)
+js/ui/google-fonts.js   Google Fonts family names for the font search (generated; loaded only when searching)
 tests/index.html        in-browser unit and end-to-end tests
 tests/fixtures.js       generates test images, GIFs, CSVs and so on
 ```
@@ -107,6 +111,7 @@ The whole page (HTML, CSS, JS) is about 100 KB, or about 35 KB gzipped as GitHub
 - XLSX → CSV/JSON converts the first sheet (the app tells you when there are more).
 - CSV output has a UTF-8 BOM, so Excel opens accented and non-Latin text correctly.
 - Animations are short (under 0.3 s) and switch off when the system asks for reduced motion. Nothing waits on an animation: if a tab isn't drawing, timers finish the work.
+- Choosing a Google font for HTML output adds a link to Google Fonts in the saved page, so the font downloads from Google when someone opens it. The built-in fonts need no network.
 - ZIP files are stored without compression (images are already compressed). Limit: 65,535 files and 4 GB.
 - ICO output is a single image of up to 256 × 256, fitted and centred on a transparent square.
 - Needs `OffscreenCanvas` for images: Chrome/Edge 69+, Firefox 105+, Safari 16.4+. WebP output is hidden in browsers that can't encode it (Safari). Data conversions work in older browsers too.

@@ -413,7 +413,9 @@ input[type="range"]:disabled { opacity: .45; cursor: default; }
 
 /* ---------- settings panel ---------- */
 
-.panel { margin-top: 14px; padding-top: 18px; border-top: var(--line) solid var(--border); container-type: inline-size; animation: fade-in .18s ease-out; }
+/* position + isolation: parts leaving during a morph fade out where they were, behind the new
+   content (motion.js puts them at z-index -1). */
+.panel { position: relative; isolation: isolate; margin-top: 14px; padding-top: 18px; border-top: var(--line) solid var(--border); container-type: inline-size; }
 .col-side .panel { margin: 0; padding: 20px; border: 0; border-radius: 16px; background: var(--surface); }
 
 /* Top of the panel: the converted file's name (click to rename), then copy / reset / hide. */
@@ -483,6 +485,28 @@ input[type="range"]:disabled { opacity: .45; cursor: default; }
   .panel-body:not(.is-doc) { grid-template-columns: minmax(240px, min(280px, 42%)) minmax(0, 1fr); }
 }
 .panel-settings { min-width: 0; }
+/* Documents: their few settings sit side by side when there's room. */
+.panel-body.is-doc .settings-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); align-items: start; }
+/* Google Fonts search: results drop down under the field. */
+.font-search { position: relative; }
+.font-search .input { width: 100%; }
+.font-results {
+  position: absolute;
+  z-index: 25;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+.font-results li { display: flex; justify-content: space-between; gap: 8px; padding: 7px 10px; border-radius: 8px; font-size: 14px; cursor: pointer; }
+.font-results li .muted { font-size: 12px; }
+.font-results li.is-active, .font-results li:hover { background: var(--surface-2); }
+.font-results li.font-none { cursor: default; background: none; }
 .settings-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
 .panel-preview { min-width: 0; }
 
@@ -502,13 +526,12 @@ fieldset.field > legend { padding: 0; margin-bottom: 8px; }
 /* Background colour for transparent areas: white, black, or any colour. */
 .swatches { display: flex; gap: 8px; }
 .swatch { position: relative; display: block; cursor: pointer; }
-.swatch .bg-pick { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.swatch .bg-pick, .swatch .pg-pick { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
 .swatch span { display: block; width: var(--control-h); height: var(--control-h); border: var(--line) solid var(--border); border-radius: var(--radius); background: var(--c); }
-.swatch .bg-pick:checked + span { outline: var(--line) solid var(--accent); outline-offset: 2px; }
-.swatch .bg-pick:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.swatch .bg-pick:checked + span, .swatch .pg-pick:checked + span { outline: var(--line) solid var(--accent); outline-offset: 2px; }
+.swatch .bg-pick:focus-visible + span, .swatch .pg-pick:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
 .bg-custom-chip { background: conic-gradient(#e0553a, #e8b93a, #3fbf63, #3aa6e0, #9a55e0, #e0553a) !important; }
-.swatch-custom .bg-pick:checked + .bg-custom-chip { background: var(--c) !important; }
-.bg-color { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; pointer-events: none; }
+.swatch-custom .bg-pick:checked + .bg-custom-chip, .swatch-custom .pg-pick:checked + .bg-custom-chip { background: var(--c) !important; }
 
 .r-lock .i-unlocked { display: none; }
 .r-lock[aria-pressed="false"] .i-locked { display: none; }
@@ -612,7 +635,7 @@ fieldset.field > legend { padding: 0; margin-bottom: 8px; }
 .doc-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .doc-box {
   width: 100%;
-  height: 320px;
+  height: var(--doc-h, 320px);
   margin: 0;
   padding: 10px 12px;
   overflow: auto;
@@ -622,8 +645,40 @@ fieldset.field > legend { padding: 0; margin-bottom: 8px; }
   color: var(--text);
   font: 13px/1.5 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
 }
-.col-side .doc-box { height: clamp(240px, calc(100vh - 380px), 640px); }
-textarea.doc-box { display: block; resize: vertical; }
+.col-side .doc-box { height: var(--doc-h, clamp(240px, calc(100vh - 380px), 640px)); }
+/* The text area sits inside a box like the result, so its scrollbar stays within the rounded border. */
+.doc-edit { padding: 0; overflow: hidden; }
+.doc-src {
+  display: block;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  resize: none;
+}
+.doc-src:focus { outline: none; }
+.doc-edit:focus-within { border-color: var(--accent); }
+.doc-box, .doc-src { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+
+/* One handle under both boxes sets their height together. */
+.doc-grip {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  margin-top: -10px;
+  border-radius: 9px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.doc-grip span { width: 56px; height: 4px; border-radius: 2px; background: var(--border); transition: background-color var(--fast); }
+.doc-grip:hover span, .doc-grip:focus-visible span { background: var(--muted); }
+.doc-grip:focus-visible { outline-offset: 0; }
 .doc-box pre { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
 .doc-box table { border-collapse: collapse; font-family: var(--font); }
 .doc-box th, .doc-box td {
@@ -702,6 +757,56 @@ textarea.doc-box { display: block; resize: vertical; }
   .viewer-hint { display: none; }
 }
 
+/* ---------- colour picker pop-up (js/ui/colorpicker.js) ---------- */
+
+.cpick {
+  position: fixed;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 236px;
+  padding: 12px;
+  border: var(--line) solid var(--border);
+  border-radius: 16px;
+  background: var(--bg);
+}
+/* Saturation left to right, brightness bottom to top. Black and white here are colour maths,
+   not UI colours. */
+.cpick-sv {
+  position: relative;
+  height: 150px;
+  border-radius: 10px;
+  background: linear-gradient(to top, #000000, transparent), linear-gradient(to right, #ffffff, var(--hue, #ff0000));
+  cursor: crosshair;
+  touch-action: none;
+}
+.cpick-hue {
+  position: relative;
+  height: 14px;
+  margin: 2px 0;
+  border-radius: 7px;
+  background: linear-gradient(to right, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000);
+  cursor: pointer;
+  touch-action: none;
+}
+.cpick-dot, .cpick-knob {
+  position: absolute;
+  border: 3px solid var(--overlay-fg);
+  border-radius: 50%;
+  outline: 1px solid var(--overlay);
+  pointer-events: none;
+}
+.cpick-dot { width: 18px; height: 18px; margin: -9px 0 0 -9px; }
+.cpick-knob { top: 50%; width: 20px; height: 20px; margin: -10px 0 0 -10px; background: transparent; }
+.cpick-sv:focus-visible, .cpick-hue:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.cpick-row { display: flex; align-items: center; gap: 8px; }
+.cpick-chip { flex: none; width: var(--control-h); height: var(--control-h); border: var(--line) solid var(--border); border-radius: var(--radius); }
+.cpick-hex { flex: 1 1 auto; width: auto; min-width: 0; font-family: ui-monospace, Consolas, monospace; }
+.cpick-recent { display: flex; flex-wrap: wrap; gap: 6px; }
+.cpick-swatch { width: 26px; height: 26px; padding: 0; border: var(--line) solid var(--border); border-radius: 8px; cursor: pointer; }
+.cpick-swatch:hover { border-color: var(--muted); }
+
 /* ---------- motion: short and quiet; all of it is off with "reduce motion" ---------- */
 
 @keyframes fade-in { from { opacity: 0; } }
@@ -712,7 +817,7 @@ textarea.doc-box { display: block; resize: vertical; }
   transition: background-color var(--fast), border-color var(--fast), color var(--fast), opacity var(--fast);
 }
 .select, .input, .p-name { transition: border-color var(--fast), background-color var(--fast); }
-.head-main, .head-confirm { animation: fade-in .16s ease-out; }
+.head-confirm, .head-main.is-back { animation: fade-in .16s ease-out; }
 .file-status > * { animation: fade-in .2s ease-out; }
 .file-status.is-done .status-icon { animation: pop .32s var(--ease); }
 #zip-all { animation: fade-in .2s ease-out; }
@@ -720,7 +825,7 @@ textarea.doc-box { display: block; resize: vertical; }
 /* Switching theme cross-fades colours for a moment (class set by js/ui/theme.js). */
 @media (prefers-reduced-motion: no-preference) {
   html.theme-anim, html.theme-anim *, html.theme-anim *::before, html.theme-anim *::after {
-    transition: background-color .3s ease, border-color .3s ease, color .3s ease !important;
+    transition: background-color .18s ease, border-color .18s ease, color .18s ease !important;
   }
 }
 

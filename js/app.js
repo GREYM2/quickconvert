@@ -48,49 +48,7 @@ QC.define('app', function (QC) {
     return e;
   }
 
-  /* ---------- motion ---------- */
-
-  var EASE = 'cubic-bezier(.2, .8, .2, 1)';
-  var reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-  function calm() { return reducedMotion.matches || typeof Element.prototype.animate !== 'function'; }
-
-  // Run `done` when the animation ends, or after a timer if the page isn't animating
-  // (background tab): the work must never wait on the animation.
-  function afterAnim(anim, ms, done) {
-    var ran = false;
-    function once() { if (!ran) { ran = true; done(); } }
-    anim.onfinish = once;
-    setTimeout(once, ms + 80);
-  }
-
-  // Change the layout, then let the page parts that moved glide from where they were
-  // (a "FLIP" animation: First, Last, Invert, Play).
-  function glide(change) {
-    var parts = calm() ? [] : [document.querySelector('.brand'), document.getElementById('theme-toggle'),
-      el.summary, el.actions, document.querySelector('.col-main')];
-    var before = parts.map(function (n) { return n.getBoundingClientRect(); });
-    change();
-    parts.forEach(function (n, i) {
-      var a = n.getBoundingClientRect(), b = before[i];
-      if (!a.width || !b.width) return; // hidden before or after
-      var dx = b.left - a.left, dy = b.top - a.top;
-      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
-      n.animate([{ transform: 'translate(' + dx + 'px, ' + dy + 'px)' }, { transform: 'none' }], { duration: 260, easing: EASE });
-    });
-  }
-
-  // A removed file folds away instead of vanishing.
-  function removeRow(row) {
-    if (calm()) { row.remove(); return; }
-    var cs = getComputedStyle(row);
-    row.style.overflow = 'hidden';
-    row.style.pointerEvents = 'none';
-    var anim = row.animate([
-      { opacity: 1, height: row.offsetHeight + 'px', paddingTop: cs.paddingTop, paddingBottom: cs.paddingBottom, marginBottom: cs.marginBottom },
-      { opacity: 0, height: '0px', paddingTop: '0px', paddingBottom: '0px', marginBottom: '0px' }
-    ], { duration: 180, easing: 'ease-in', fill: 'forwards' });
-    afterAnim(anim, 180, function () { row.remove(); });
-  }
+  var M = QC.motion; // animation helpers (js/ui/motion.js)
 
   var ICON = {
     check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
@@ -101,11 +59,11 @@ QC.define('app', function (QC) {
 
   // Same key = same output, so a cached result can be reused.
   function settingsKey(item) {
-    return JSON.stringify([item.target, item.kind === 'image' ? item.settings : item.editVersion]);
+    return JSON.stringify([item.target, item.kind === 'image' ? item.settings : [item.editVersion, item.page]]);
   }
 
   function jobOptions(item) {
-    return { from: item.type, to: item.target, settings: Object.assign({}, item.settings) };
+    return { from: item.type, to: item.target, settings: Object.assign({}, item.settings), page: Object.assign({}, item.page) };
   }
 
   // The file to convert: the original, or the user's edited text.
@@ -142,7 +100,6 @@ QC.define('app', function (QC) {
       render(item);
     });
     updateToolbar();
-    ensureSelection();
   }
 
   function createItem(file) {
@@ -153,7 +110,8 @@ QC.define('app', function (QC) {
       settings: QC.image.defaults(), dims: null, previewSource: null,
       status: 'idle', progress: 0, error: '', permanent: false, run: 0,
       result: null, outdated: false, pending: null, cache: null,
-      outBase: null, editedText: null, editVersion: 0
+      outBase: null, editedText: null, editVersion: 0,
+      page: { background: '#ffffff', font: 'system', weights: false }  // HTML output style
     };
     if (!f) fail(item, 'Unsupported format.', true);
     else if (f.kind === 'image' && !caps.offscreen) fail(item, 'Images need a newer browser (no OffscreenCanvas).', true);
@@ -226,12 +184,7 @@ QC.define('app', function (QC) {
   }
 
   function removeItem(item) {
-    var next = null;
-    if (panel && panel.item === item) {
-      var list = Array.from(items.values()), i = list.indexOf(item);
-      next = list[i + 1] || list[i - 1] || null;
-      closePanel(true);
-    }
+    if (panel && panel.item === item) closePanel(true);
     item.run++;
     QC.pool.cancel(function (j) { return j.owner === item.id; });
     dropResult(item);
@@ -239,18 +192,15 @@ QC.define('app', function (QC) {
     selection.delete(item);
     if (anchor === item) anchor = null;
     items.delete(item.id);
-    removeRow(item.dom.row);
+    M.foldAway(item.dom.row);
     updateToolbar();
-    ensureSelection(next);
     updateSide();
   }
 
   function clearAll() {
     var all = Array.from(items.values());
     closePanel(true);
-    clearing = true; // don't open the next file's settings for every file removed
     all.forEach(removeItem);
-    clearing = false;
     updateSide();
   }
 
@@ -437,11 +387,10 @@ QC.define('app', function (QC) {
 
   /* ---------- settings panel ---------- */
 
-  // Wide screens: the selected file's panel is in a side column, which can be hidden (×).
+  // Wide screens: a clicked file's panel is in a side column, which can be hidden (×).
+  // Settings only open when the user clicks a file, never by themselves.
   // Phones: the panel opens inside the file's row and can be closed again.
   var RESIZE_KEYS = ['resizeMode', 'percent', 'width', 'height', 'lockAspect', 'lockDriver'];
-  var sideHidden = false;   // the user hid the side column; don't reopen it by itself
-  var clearing = false;
 
   var panelCtx = {
     onChange: invalidate,
@@ -476,9 +425,10 @@ QC.define('app', function (QC) {
   function updateSide() {
     var show = !!panel;
     if (document.body.classList.contains('show-side') === show) return;
-    glide(function () { document.body.classList.toggle('show-side', show); });
-    if (show && wide.matches && !calm()) {
-      el.sideInner.animate([{ opacity: 0, transform: 'translateX(24px)' }, { opacity: 1, transform: 'none' }], { duration: 240, easing: EASE });
+    M.glide([document.querySelector('.brand'), document.getElementById('theme-toggle'), el.summary, el.actions,
+      document.querySelector('.col-main')], function () { document.body.classList.toggle('show-side', show); });
+    if (show && wide.matches && !M.calm()) {
+      el.sideInner.animate([{ opacity: 0, transform: 'translateX(24px)' }, { opacity: 1, transform: 'none' }], { duration: 240, easing: M.EASE });
     }
   }
 
@@ -498,8 +448,7 @@ QC.define('app', function (QC) {
   function retract() {
     if (!panel) return;
     if (!wide.matches) { closePanel(); return; }
-    sideHidden = true;
-    if (calm()) { closePanel(); return; }
+    if (M.calm()) { closePanel(); return; }
     var ctrl = panel.ctrl;
     panel.item.dom.gear.setAttribute('aria-expanded', 'false');
     panel.item.dom.row.classList.remove('is-open');
@@ -507,7 +456,7 @@ QC.define('app', function (QC) {
     var anim = el.sideInner.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateX(24px)' }],
       { duration: 160, easing: 'ease-in', fill: 'forwards' });
     var l = leaving = { anim: anim, ctrl: ctrl };
-    afterAnim(anim, 160, function () { if (leaving === l) { finishLeaving(); updateSide(); } });
+    M.afterAnim(anim, 160, function () { if (leaving === l) { finishLeaving(); updateSide(); } });
   }
 
   function finishLeaving() {
@@ -522,8 +471,14 @@ QC.define('app', function (QC) {
     if (item.permanent) return;
     finishLeaving();
     if (!panel || panel.item !== item) {
+      // Wide screens: the panel for the new file grows or shrinks from the old one, shared
+      // options move into place and the rest fade in or out. Phones: it unfolds in the row.
+      var snap = panel && wide.matches ? M.snapshot(panel.ctrl.root) : null;
+      var picture = panel && wide.matches ? panel.ctrl.picture() : null;
       closePanel(true);
-      panel = { item: item, ctrl: QC.panel.open(item, panelHost(item), panelCtx) };
+      panel = { item: item, ctrl: QC.panel.open(item, panelHost(item), panelCtx, { startPicture: picture }) };
+      if (snap) M.play(snap, panel.ctrl.root);
+      else if (!wide.matches) M.unfold(panel.ctrl.root);
       item.dom.gear.setAttribute('aria-expanded', 'true');
       item.dom.row.classList.add('is-open');
       updateSide();
@@ -536,17 +491,8 @@ QC.define('app', function (QC) {
 
   // Gear or a plain click on a file. On phones a second click closes the panel again.
   function pick(item) {
-    sideHidden = false;
     if (!wide.matches && panel && panel.item === item) closePanel();
     else openPanelFor(item);
-  }
-
-  // Wide screens open the first file's settings by themselves, unless the user hid them.
-  function ensureSelection(preferred) {
-    if (!wide.matches || panel || sideHidden || clearing) return;
-    var list = Array.from(items.values()).filter(function (i) { return !i.permanent; });
-    var item = preferred && !preferred.permanent ? preferred : list[0];
-    if (item) openPanelFor(item);
   }
 
   /* ---------- choosing files (Ctrl / Shift click, like a file manager) ---------- */
@@ -584,7 +530,7 @@ QC.define('app', function (QC) {
       return;
     }
     renderSelection();
-    if (wide.matches) { sideHidden = false; openPanelFor(item); }
+    if (wide.matches) openPanelFor(item);
   }
 
   // Nothing chosen any more; if the file on show was one of them, its settings retract too.
@@ -617,6 +563,10 @@ QC.define('app', function (QC) {
     copyTargets(source).list.forEach(function (item) {
       if (item === source || item.permanent) return;
       var touched = false;
+      if (source.kind === 'data' && item.kind === 'data' && JSON.stringify(item.page) !== JSON.stringify(source.page)) {
+        item.page = Object.assign({}, source.page);
+        touched = true;
+      }
       if (source.kind === 'image' && item.kind === 'image') {
         var own = {};
         RESIZE_KEYS.forEach(function (k) { own[k] = item.settings[k]; });
@@ -730,10 +680,7 @@ QC.define('app', function (QC) {
     el.convert.addEventListener('click', convertAll);
     el.zip.addEventListener('click', downloadZip);
     el.clear.addEventListener('click', clearAll);
-    var onWide = function () {
-      if (panel) panel.ctrl.mount(panelHost(panel.item));
-      else ensureSelection();
-    };
+    var onWide = function () { if (panel) panel.ctrl.mount(panelHost(panel.item)); };
     if (wide.addEventListener) wide.addEventListener('change', onWide);
     else wide.addListener(onWide);
     window.addEventListener('pagehide', function (e) {

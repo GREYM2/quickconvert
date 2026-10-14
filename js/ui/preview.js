@@ -22,6 +22,7 @@ QC.define('preview', function (QC) {
 
   // opts.maxHeight(): the tallest the picture may be inside the panel (CSS px).
   // opts.controls: element for the zoom buttons (default: below the picture).
+  // opts.start: { canvas, w, h } picture to show until this one's content arrives.
   function create(host, opts) {
     opts = opts || {};
     host.innerHTML =
@@ -58,6 +59,9 @@ QC.define('preview', function (QC) {
     var res = null, resW = 0, resH = 0, resToken = 0;
     var W = 0, H = 0;                // picture size in CSS px
     var pos = 50, z = 1, cx = 0.5, cy = 0.5;
+    var goal = { z: 1, cx: 0.5, cy: 0.5 };   // where zoom is heading; z/cx/cy glide towards it
+    var tween = 0, tweenT = 0;
+    var grow = false;                        // next size change comes from new content: animate it
     var raf = 0, destroyed = false, full = false, viewer = null, home = null;
 
     /* ----- sizing ----- */
@@ -91,23 +95,37 @@ QC.define('preview', function (QC) {
       if (scale * dpr >= 2) scale = Math.floor(scale * dpr) / dpr;
       var w = n[0] * scale, h = n[1] * scale;
       if (w !== W || h !== H) {
+        var fromW = W, fromH = H;
         W = w; H = h;
         box.style.width = w + 'px';
         box.style.height = h + 'px';
         view.width = Math.max(1, Math.round(w * dpr));
         view.height = Math.max(1, Math.round(h * dpr));
+        // A new picture of another size: the frame resizes smoothly instead of jumping.
+        if (grow && fromW && fromH && !QC.motion.calm()) {
+          box.animate([{ width: fromW + 'px', height: fromH + 'px' }, { width: w + 'px', height: h + 'px' }],
+            { duration: 260, easing: QC.motion.EASE });
+        }
       }
+      grow = false;
       clampView();
       draw();
     }
 
     /* ----- drawing ----- */
 
+    function clampState(st) {
+      st.z = clamp(st.z, 1, maxZoom());
+      var half = 0.5 / st.z;
+      st.cx = clamp(st.cx, half, 1 - half);
+      st.cy = clamp(st.cy, half, 1 - half);
+      return st;
+    }
+
     function clampView() {
-      z = clamp(z, 1, maxZoom());
-      var half = 0.5 / z;
-      cx = clamp(cx, half, 1 - half);
-      cy = clamp(cy, half, 1 - half);
+      var st = clampState({ z: z, cx: cx, cy: cy });
+      z = st.z; cx = st.cx; cy = st.cy;
+      clampState(goal);
     }
 
     // Draw a picture fitted inside the frame without stretching: one with another shape (the
@@ -146,34 +164,60 @@ QC.define('preview', function (QC) {
       if (!raf) raf = requestAnimationFrame(draw);
     }
 
+    // The label follows the gliding zoom: 1.1×, 1.2×, 1.3×… (one decimal, whole numbers from 10×).
     function renderZoom() {
-      var zoomed = z > 1.001;
-      zoomOut.disabled = !zoomed;
-      zoomIn.disabled = z >= maxZoom() - 0.001;
-      zoomFit.textContent = zoomed ? (z < 10 ? z.toFixed(1) : Math.round(z)) + '×' : 'Fit';
-      box.classList.toggle('is-zoomed', zoomed);
-      box.style.touchAction = zoomed ? 'none' : 'pan-y'; // zoomed: one finger moves the picture
+      var isZoomed = z > 1.05;
+      zoomOut.disabled = goal.z <= 1.001;
+      zoomIn.disabled = goal.z >= maxZoom() - 0.001;
+      zoomFit.textContent = isZoomed ? (z < 10 ? z.toFixed(1) : Math.round(z)) + '×' : 'Fit';
+      box.classList.toggle('is-zoomed', isZoomed);
+      box.style.touchAction = isZoomed ? 'none' : 'pan-y'; // zoomed: one finger moves the picture
     }
 
     /* ----- zoom and pan ----- */
 
-    // Zoom by `factor`, keeping the point (x, y) (CSS px inside the picture) in place.
-    function zoomAt(factor, x, y) {
-      var u = cx - 0.5 / z + (x / W) / z, v = cy - 0.5 / z + (y / H) / z;
-      var nz = clamp(z * factor, 1, maxZoom());
-      cx = u - (x / W) / nz + 0.5 / nz;
-      cy = v - (y / H) / nz + 0.5 / nz;
-      z = nz;
+    // The view state after zooming `st` by `factor` around the point (x, y) (CSS px).
+    function zoomed(st, factor, x, y) {
+      var u = st.cx - 0.5 / st.z + (x / W) / st.z, v = st.cy - 0.5 / st.z + (y / H) / st.z;
+      var nz = clamp(st.z * factor, 1, maxZoom());
+      return clampState({ z: nz, cx: u - (x / W) / nz + 0.5 / nz, cy: v - (y / H) / nz + 0.5 / nz });
+    }
+
+    // Buttons, wheel and Fit set a goal; the view glides there (repeated wheel steps add up).
+    function zoomTo(st) {
+      goal = st;
+      if (QC.motion.calm() || document.hidden) { z = goal.z; cx = goal.cx; cy = goal.cy; requestDraw(); return; }
+      if (!tween) { tweenT = performance.now(); tween = requestAnimationFrame(step); }
+      renderZoom();
+    }
+
+    function step(t) {
+      tween = 0;
+      var a = 1 - Math.exp(-(t - tweenT) / 55);   // eases out, settles in about a quarter second
+      tweenT = t;
+      var lz = Math.log(z), gz = Math.log(goal.z);
+      z = Math.exp(lz + (gz - lz) * a);
+      cx += (goal.cx - cx) * a;
+      cy += (goal.cy - cy) * a;
+      var done = Math.abs(gz - Math.log(z)) < 0.003 && Math.abs(goal.cx - cx) < 0.0005 && Math.abs(goal.cy - cy) < 0.0005;
+      if (done) { z = goal.z; cx = goal.cx; cy = goal.cy; }
       clampView();
+      draw();
+      if (!done) tween = requestAnimationFrame(step);
+    }
+
+    // Pinch and drag follow the fingers directly (no glide).
+    function setView(st) {
+      if (tween) { cancelAnimationFrame(tween); tween = 0; }
+      st = clampState(st);
+      z = st.z; cx = st.cx; cy = st.cy;
+      goal = { z: z, cx: cx, cy: cy };
       requestDraw();
     }
 
-    function pan(dx, dy) {
-      cx -= dx / (W * z);
-      cy -= dy / (H * z);
-      clampView();
-      requestDraw();
-    }
+    function zoomAt(factor, x, y) { setView(zoomed({ z: z, cx: cx, cy: cy }, factor, x, y)); }
+
+    function pan(dx, dy) { setView({ z: z, cx: cx - dx / (W * z), cy: cy - dy / (H * z) }); }
 
     function setPos(p) {
       pos = clamp(p, 0, 100);
@@ -182,16 +226,16 @@ QC.define('preview', function (QC) {
       requestDraw();
     }
 
-    zoomIn.addEventListener('click', function () { zoomAt(ZOOM_STEP, W / 2, H / 2); });
-    zoomOut.addEventListener('click', function () { zoomAt(1 / ZOOM_STEP, W / 2, H / 2); });
-    zoomFit.addEventListener('click', function () { z = 1; cx = cy = 0.5; requestDraw(); });
+    zoomIn.addEventListener('click', function () { zoomTo(zoomed(goal, ZOOM_STEP, W / 2, H / 2)); });
+    zoomOut.addEventListener('click', function () { zoomTo(zoomed(goal, 1 / ZOOM_STEP, W / 2, H / 2)); });
+    zoomFit.addEventListener('click', function () { zoomTo({ z: 1, cx: 0.5, cy: 0.5 }); });
 
     box.addEventListener('wheel', function (e) {
       var dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * H : e.deltaY;
-      if (dy > 0 && z <= 1.001) return; // not zoomed: scrolling down still scrolls the page
+      if (dy > 0 && goal.z <= 1.001) return; // not zoomed: scrolling down still scrolls the page
       e.preventDefault();
       var r = box.getBoundingClientRect();
-      zoomAt(Math.exp(-dy * 0.002), e.clientX - r.left, e.clientY - r.top);
+      zoomTo(zoomed(goal, Math.exp(-dy * 0.002), e.clientX - r.left, e.clientY - r.top));
     }, { passive: false });
 
     /* ----- pointer: divider, pan, pinch ----- */
@@ -219,7 +263,7 @@ QC.define('preview', function (QC) {
         return;
       }
       last = { x: e.clientX, y: e.clientY };
-      if (nearDivider(e) || z <= 1.001) {
+      if (nearDivider(e) || goal.z <= 1.001) {
         mode = 'divider';
         var r = box.getBoundingClientRect();
         setPos((e.clientX - r.left) / r.width * 100);
@@ -335,7 +379,18 @@ QC.define('preview', function (QC) {
       orig.width = bitmap.width;
       orig.height = bitmap.height;
       orig.getContext('2d').drawImage(bitmap, 0, 0);
+      grow = true;
       layout();
+    }
+
+    // A copy of what's on screen, for the next file's preview to start from.
+    function picture() {
+      if (!W || !view.width) return null;
+      var c = document.createElement('canvas');
+      c.width = view.width;
+      c.height = view.height;
+      c.getContext('2d').drawImage(view, 0, 0);
+      return { canvas: c, w: W, h: H };
     }
 
     function decode(blob) {
@@ -360,6 +415,7 @@ QC.define('preview', function (QC) {
         res = image;
         resW = image.naturalWidth || image.width;
         resH = image.naturalHeight || image.height;
+        grow = true;
         layout();
       }, function () { /* keep the previous result */ });
     }
@@ -372,6 +428,7 @@ QC.define('preview', function (QC) {
       destroyed = true;
       if (full) exitFull();
       if (raf) cancelAnimationFrame(raf);
+      if (tween) cancelAnimationFrame(tween);
       if (ro) ro.disconnect();
       window.removeEventListener('resize', layout);
       free(res);
@@ -381,9 +438,19 @@ QC.define('preview', function (QC) {
       bar.remove();
     }
 
+    // Start from the previous file's picture, so switching files doesn't flash an empty frame.
+    if (opts.start) {
+      W = opts.start.w; H = opts.start.h;
+      box.style.width = W + 'px';
+      box.style.height = H + 'px';
+      view.width = Math.max(1, Math.round(W * dpr));
+      view.height = Math.max(1, Math.round(H * dpr));
+      ctx.drawImage(opts.start.canvas, 0, 0, view.width, view.height);
+    }
+
     renderFullButton();
     renderZoom();
-    return { setOriginal: setOriginal, setResult: setResult, layout: layout, destroy: destroy };
+    return { setOriginal: setOriginal, setResult: setResult, layout: layout, picture: picture, destroy: destroy };
   }
 
   return { create: create };

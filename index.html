@@ -24,6 +24,8 @@
 <script defer src="js/convert/jobs.js"></script>
 <!-- Page-only modules. -->
 <script defer src="js/pool.js"></script>
+<script defer src="js/ui/motion.js"></script>
+<script defer src="js/ui/colorpicker.js"></script>
 <script defer src="js/ui/theme.js"></script>
 <script defer src="js/ui/preview.js"></script>
 <script defer src="js/ui/panel.js"></script>
@@ -122,62 +124,92 @@
           <button type="button" class="btn btn-primary copy-everything">Everything</button>
         </div>
       </div>
-      <p class="hint is-warn p-name-note" hidden></p>
+      <p class="hint is-warn p-name-note" data-morph="name-note" hidden></p>
     </div>
 
     <div class="panel-body">
       <div class="panel-settings">
         <div class="settings-grid">
-          <div class="field">
+          <div class="field" data-morph="f-target">
             <span class="field-label">Convert to</span>
             <select class="select p-target" aria-label="Convert to"></select>
           </div>
 
-          <div class="field" data-image data-show="quality">
+          <!-- HTML output only: page background (text colour follows) and font. -->
+          <fieldset class="field" data-doc data-show="page" data-morph="f-page" hidden>
+            <legend class="field-label">Page background</legend>
+            <div class="swatches">
+              <!-- Page colours of the output document, not UI colours. -->
+              <label class="swatch" title="White"><input type="radio" class="pg-pick" value="#ffffff" aria-label="White"><span style="--c:#ffffff"></span></label>
+              <label class="swatch" title="Paper"><input type="radio" class="pg-pick" value="#f4ecd8" aria-label="Paper"><span style="--c:#f4ecd8"></span></label>
+              <label class="swatch" title="Grey"><input type="radio" class="pg-pick" value="#2b2b2e" aria-label="Grey"><span style="--c:#2b2b2e"></span></label>
+              <label class="swatch" title="Dark"><input type="radio" class="pg-pick" value="#121214" aria-label="Dark"><span style="--c:#121214"></span></label>
+              <label class="swatch swatch-custom pg-custom" title="Pick a colour"><input type="radio" class="pg-pick" value="custom" aria-label="Custom colour"><span class="bg-custom-chip pg-chip"></span></label>
+            </div>
+            <p class="hint">The text turns dark or light to stay readable.</p>
+          </fieldset>
+
+          <div class="field" data-doc data-show="font" data-morph="f-font" hidden>
+            <span class="field-label">Font</span>
+            <select class="select pg-font" aria-label="Font">
+              <option value="system">System sans-serif</option>
+              <option value="serif">Serif</option>
+              <option value="mono">Monospace</option>
+              <option value="search">Search Google Fonts…</option>
+            </select>
+            <div class="font-search" data-morph="font-search" hidden>
+              <input type="text" class="input font-name" placeholder="Type part of a name, e.g. rale" spellcheck="false" autocomplete="off"
+                role="combobox" aria-autocomplete="list" aria-expanded="false" aria-label="Search Google Fonts">
+              <ul class="font-results" role="listbox" aria-label="Google Fonts" hidden></ul>
+            </div>
+            <p class="hint font-note" data-morph="font-note" hidden></p>
+          </div>
+
+          <div class="field" data-image data-show="quality" data-morph="f-quality">
             <span class="field-label">Quality</span>
             <div class="q-row">
               <input type="range" class="q-range" min="1" max="100" step="1" aria-label="Quality">
               <input type="number" class="input q-num" min="1" max="100" step="1" inputmode="numeric" aria-label="Quality, 1 to 100">
             </div>
-            <p class="hint q-found" hidden></p>
+            <p class="hint q-found" data-morph="q-found" hidden></p>
           </div>
 
-          <fieldset class="field" data-image data-show="target">
+          <fieldset class="field" data-image data-show="target" data-morph="f-size">
             <legend class="field-label">File size</legend>
             <div class="segmented">
               <label><input type="radio" class="t-mode" value="auto"><span>Auto</span></label>
               <label><input type="radio" class="t-mode" value="target"><span>Target</span></label>
             </div>
-            <div class="inline t-inputs">
+            <div class="inline t-inputs" data-morph="t-inputs">
               <input type="number" class="input t-value" min="0" step="any" inputmode="decimal" placeholder="e.g. 700" aria-label="Target size">
               <select class="select t-unit" aria-label="Unit"><option>KB</option><option>MB</option></select>
             </div>
-            <p class="hint t-note" hidden></p>
+            <p class="hint t-note" data-morph="t-note" hidden></p>
           </fieldset>
 
-          <fieldset class="field" data-image data-show="background">
+          <fieldset class="field" data-image data-show="background" data-morph="f-bg">
             <legend class="field-label">Background</legend>
             <div class="swatches">
               <!-- Image content colours, not UI colours. -->
               <label class="swatch" title="White"><input type="radio" class="bg-pick" value="#ffffff" aria-label="White"><span style="--c:#ffffff"></span></label>
               <label class="swatch" title="Black"><input type="radio" class="bg-pick" value="#000000" aria-label="Black"><span style="--c:#000000"></span></label>
-              <label class="swatch swatch-custom" title="Pick a colour"><input type="radio" class="bg-pick" value="custom" aria-label="Custom colour"><span class="bg-custom-chip"></span><input type="color" class="bg-color" aria-label="Choose colour"></label>
+              <label class="swatch swatch-custom bg-custom" title="Pick a colour"><input type="radio" class="bg-pick" value="custom" aria-label="Custom colour"><span class="bg-custom-chip"></span></label>
             </div>
             <p class="hint bg-hint"></p>
           </fieldset>
 
-          <fieldset class="field" data-image>
+          <fieldset class="field" data-image data-morph="f-resize">
             <legend class="field-label">Resize</legend>
             <div class="segmented">
               <label><input type="radio" class="r-mode" value="none"><span>Original</span></label>
               <label><input type="radio" class="r-mode" value="percent"><span>Percent</span></label>
               <label><input type="radio" class="r-mode" value="pixels"><span>Pixels</span></label>
             </div>
-            <div class="inline r-percent">
+            <div class="inline r-percent" data-morph="r-percent">
               <input type="number" class="input r-pct" min="1" max="1000" step="any" inputmode="decimal" aria-label="Scale in percent">
               <span>%</span>
             </div>
-            <div class="inline r-pixels">
+            <div class="inline r-pixels" data-morph="r-pixels">
               <input type="number" class="input r-w" min="1" step="1" inputmode="numeric" aria-label="Width in pixels">
               <span>×</span>
               <input type="number" class="input r-h" min="1" step="1" inputmode="numeric" aria-label="Height in pixels">
@@ -189,7 +221,7 @@
             <p class="hint r-info"></p>
           </fieldset>
 
-          <div class="field" data-image>
+          <div class="field" data-image data-morph="f-resample">
             <span class="field-label">Resampling</span>
             <select class="select rs" aria-label="Resampling" title="Used when enlarging and when shrinking. &quot;High&quot; is the browser's best filter (bicubic or similar, depends on the browser).">
               <option value="nearest">Nearest: pixelated, for pixel art</option>
@@ -200,7 +232,7 @@
         </div>
       </div>
 
-      <div class="panel-preview" data-image>
+      <div class="panel-preview" data-image data-morph="preview">
         <div class="preview-host"></div>
         <div class="preview-foot">
           <div class="zoom-slot"></div>
@@ -208,16 +240,17 @@
         </div>
       </div>
 
-      <div class="panel-doc" data-doc>
+      <div class="panel-doc" data-doc data-morph="doc">
         <div class="doc-pane">
           <div class="doc-head"><span class="field-label">Original</span><span class="hint doc-src-note"></span></div>
-          <textarea class="doc-src doc-box" spellcheck="false" aria-label="Original content"></textarea>
+          <div class="doc-edit doc-box"><textarea class="doc-src" spellcheck="false" aria-label="Original content"></textarea></div>
           <div class="doc-src-view doc-box" hidden></div>
         </div>
         <div class="doc-pane">
           <div class="doc-head"><span class="field-label">Result</span><span class="hint doc-out-note" aria-live="polite"></span></div>
           <div class="doc-out doc-box"></div>
         </div>
+        <div class="doc-grip" role="separator" aria-orientation="horizontal" aria-label="Height of the text boxes" title="Drag to resize both boxes" tabindex="0"><span></span></div>
       </div>
     </div>
   </div>

@@ -202,11 +202,55 @@ QC.define('data', function (QC) {
     return s.replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; });
   }
 
-  function htmlPage(title, body) {
+  /* ----- page style for HTML output: background, matching text colour, font ----- */
+
+  // Fonts that need no download.
+  var LOCAL_FONTS = {
+    system: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+    serif: 'Georgia, "Times New Roman", serif',
+    mono: 'ui-monospace, Consolas, "Courier New", monospace'
+  };
+
+  function luminance(hex) {
+    var m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+    if (!m) return 1;
+    var c = [0, 2, 4].map(function (i) {
+      var v = parseInt(m[1].substr(i, 2), 16) / 255;
+      return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  }
+
+  // Dark or light text, whichever reads better on the background (higher contrast).
+  function textOn(bg) {
+    var l = luminance(bg);
+    var dark = (l + 0.05) / (luminance('#1e1e20') + 0.05), light = (luminance('#e8e8e5') + 0.05) / (l + 0.05);
+    return dark >= light ? '#1e1e20' : '#e8e8e5';
+  }
+
+  // "g:Open Sans" -> Google Fonts family name, or '' for a built-in font.
+  function googleFamily(font) {
+    var name = /^g:([A-Za-z0-9 ]{1,60})$/.exec(font || '');
+    return name ? name[1].trim() : '';
+  }
+
+  function googleFontUrl(name, weights) {
+    return 'https://fonts.googleapis.com/css2?family=' + encodeURIComponent(name).replace(/%20/g, '+') +
+      (weights ? ':wght@400;700' : '') + '&display=swap';
+  }
+
+  // page: { background: '#rrggbb', font: 'system' | 'serif' | 'mono' | 'g:<Google family>', weights }
+  function htmlPage(title, body, page) {
+    page = page || {};
+    var bg = /^#[0-9a-f]{6}$/i.test(page.background || '') ? page.background : '#ffffff';
+    var family = googleFamily(page.font);
+    var stack = family ? '"' + family + '", ' + LOCAL_FONTS.system : LOCAL_FONTS[page.font] || LOCAL_FONTS.system;
     return '<!doctype html>\n<html>\n<head>\n<meta charset="utf-8">\n' +
       '<meta name="viewport" content="width=device-width, initial-scale=1">\n' +
       '<title>' + escapeHtml(title) + '</title>\n' +
-      '<style>body{max-width:46rem;margin:2rem auto;padding:0 1rem;font:16px/1.6 system-ui,sans-serif}' +
+      (family ? '<link rel="stylesheet" href="' + googleFontUrl(family, page.weights) + '">\n' : '') +
+      '<style>body{max-width:46rem;margin:2rem auto;padding:0 1rem;font:16px/1.6 ' + stack + ';' +
+      'background:' + bg + ';color:' + textOn(bg) + '}a{color:inherit}' +
       'pre,code{font-family:ui-monospace,Consolas,monospace}pre{overflow:auto;padding:1rem;background:rgba(128,128,128,.12)}' +
       'table{border-collapse:collapse}th,td{border:1px solid rgba(128,128,128,.4);padding:.3rem .6rem}img{max-width:100%}</style>\n' +
       '</head>\n<body>\n' + body + '\n</body>\n</html>\n';
@@ -300,10 +344,10 @@ QC.define('data', function (QC) {
         out = writeXlsx(X, from === 'csv' ? inferRows(rows) : rows);
         break;
       case 'txt>html':
-        out = htmlPage(title(file.name), textToHtml(text));
+        out = htmlPage(title(file.name), textToHtml(text), opts.page);
         break;
       case 'md>html':
-        out = htmlPage(title(file.name), await markdownToHtml(text));
+        out = htmlPage(title(file.name), await markdownToHtml(text), opts.page);
         break;
       case 'md>txt':
         out = htmlToText(await markdownToHtml(text));
@@ -321,6 +365,7 @@ QC.define('data', function (QC) {
 
   return {
     convert: convert, parseCSV: parseCSV, toCSV: toCSV, detectDelimiter: detectDelimiter,
-    rowsToObjects: rowsToObjects, jsonToRows: jsonToRows, inferValue: inferValue, htmlToText: htmlToText
+    rowsToObjects: rowsToObjects, jsonToRows: jsonToRows, inferValue: inferValue, htmlToText: htmlToText,
+    textOn: textOn, googleFontUrl: googleFontUrl
   };
 }, { worker: true });
