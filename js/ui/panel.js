@@ -100,8 +100,9 @@ QC.define('panel', function (QC) {
     function previewMaxHeight() {
       var portrait = root.classList.contains('is-portrait');
       var side = root.closest('.col-side');
-      if (!side) return window.innerHeight * (portrait ? 0.7 : 0.6);
-      var avail = window.innerHeight - (side.getBoundingClientRect().top + window.scrollY) - 16;
+      var screenH = QC.preview.screenHeight();
+      if (!side) return screenH * (portrait ? 0.7 : 0.6);
+      var avail = screenH - (side.getBoundingClientRect().top + window.scrollY) - 16;
       var box = root.querySelector('.compare');
       var boxH = box ? box.offsetHeight : 0;
       var chrome = root.offsetHeight - el.body.offsetHeight;          // name, save as, padding

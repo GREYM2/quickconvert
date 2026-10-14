@@ -127,13 +127,18 @@ QC.define('app', function (QC) {
 
     q('.file-name').textContent = item.file.name;
     q('.file-name').title = item.file.name;
-    q('.file-name').addEventListener('click', function (e) { onFileClick(item, e); });
     item.dom.meta.textContent = metaText(item);
     // Clicking anywhere on the file (except its controls and open settings) works like its name.
+    function clicked(e) {
+      if (heldItem === item) { heldItem = null; return; }   // the finger lifting after a hold
+      onFileClick(item, e);
+    }
+    q('.file-name').addEventListener('click', clicked);
     row.addEventListener('click', function (e) {
       if (e.target.closest('button, a, select, input, textarea, label, iframe, .file-panel')) return;
-      onFileClick(item, e);
+      clicked(e);
     });
+    wireHold(row, item);
     if (item.file.size > LARGE_FILE) q('.file-warn').hidden = false;
 
     var select = item.dom.target;
@@ -498,13 +503,17 @@ QC.define('app', function (QC) {
   /* ---------- choosing files (Ctrl / Shift click, like a file manager) ---------- */
 
   // A plain click only shows a file's settings; Convert still means all files.
-  // Ctrl/Cmd-click toggles files and Shift-click selects a range: then Convert (and Copy
-  // settings) apply to the selected files only.
+  // Ctrl/Cmd-click toggles files and Shift-click selects a range (on touch screens: hold a file,
+  // then tap more): then Convert (and Copy settings) apply to the selected files only.
   var selection = new Set();
   var anchor = null;        // last file clicked by the user, where a Shift range starts
 
   function onFileClick(item, e) {
     var list = Array.from(items.values());
+    if (touched && e.detail && selection.size && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      toggleChosen(item);                              // touch: while choosing, a tap adds or removes
+      return;
+    }
     if (e.shiftKey && anchor && items.has(anchor.id)) {
       var a = list.indexOf(anchor), b = list.indexOf(item);
       if (!(e.ctrlKey || e.metaKey)) selection.clear();
@@ -512,14 +521,8 @@ QC.define('app', function (QC) {
     } else if (e.ctrlKey || e.metaKey) {
       // Starting a selection: the file clicked before counts as chosen, like in Explorer.
       if (!selection.size && anchor && anchor !== item && items.has(anchor.id) && !anchor.permanent) selection.add(anchor);
-      anchor = item;
-      if (selection.has(item)) {
-        selection.delete(item);
-        renderSelection();
-        if (panel && panel.item === item) retract();   // deselected the file on show
-        return;
-      }
-      if (!item.permanent) selection.add(item);
+      toggleChosen(item);
+      return;
     } else {
       var shown = panel && panel.item === item;
       selection.clear();
@@ -531,6 +534,56 @@ QC.define('app', function (QC) {
     }
     renderSelection();
     if (wide.matches) openPanelFor(item);
+  }
+
+  // Add a file to the chosen ones, or take it out again.
+  function toggleChosen(item) {
+    anchor = item;
+    if (selection.has(item)) {
+      selection.delete(item);
+      renderSelection();
+      if (panel && panel.item === item) retract();     // deselected the file on show
+      return;
+    }
+    if (!item.permanent) selection.add(item);
+    renderSelection();
+    if (wide.matches) openPanelFor(item);
+  }
+
+  // Touch screens have no Ctrl or Shift: holding a file chooses it, and while files are chosen
+  // a tap adds or removes a file instead of showing its settings, like a phone's photo gallery.
+  var HOLD_MS = 450;
+  var HOLD_SKIP = 'button:not(.file-name), a, select, input, textarea, label, iframe, .file-panel';
+  var touched = false;      // the last press on a file was a finger or pen, not a mouse
+  var heldItem = null;      // chosen by the current hold; the click when the finger lifts is ignored
+
+  function wireHold(row, item) {
+    row.addEventListener('pointerdown', function (e) {
+      touched = e.pointerType !== 'mouse';
+      heldItem = null;
+      if (!touched || !e.isPrimary || e.target.closest(HOLD_SKIP)) return;
+      var x = e.clientX, y = e.clientY;
+      var timer = setTimeout(function () {
+        stop();
+        heldItem = item;
+        toggleChosen(item);
+        try { if (navigator.vibrate) navigator.vibrate(10); } catch (err) { /* not allowed */ }
+      }, HOLD_MS);
+      function move(ev) { if (Math.abs(ev.clientX - x) > 10 || Math.abs(ev.clientY - y) > 10) stop(); }
+      function stop() {
+        clearTimeout(timer);
+        row.removeEventListener('pointermove', move);
+        row.removeEventListener('pointerup', stop);
+        row.removeEventListener('pointercancel', stop);   // the finger started scrolling
+      }
+      row.addEventListener('pointermove', move);
+      row.addEventListener('pointerup', stop);
+      row.addEventListener('pointercancel', stop);
+    });
+    // No long-press menu on a file: holding it chooses it.
+    row.addEventListener('contextmenu', function (e) {
+      if (touched && !e.target.closest(HOLD_SKIP)) e.preventDefault();
+    });
   }
 
   // Nothing chosen any more; if the file on show was one of them, its settings retract too.

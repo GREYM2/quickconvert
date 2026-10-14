@@ -20,6 +20,20 @@ QC.define('preview', function (QC) {
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
+  // Screen height for sizing the picture, with the browser's bars shown. Phones hide and show
+  // those bars while the page scrolls, which changes window.innerHeight (and fires resize):
+  // sizing by it made the picture jump between two sizes. 100svh stays put.
+  var probe = null;
+  function screenHeight() {
+    if (!probe) {
+      probe = document.createElement('div');
+      probe.setAttribute('aria-hidden', 'true');
+      probe.style.cssText = 'position:fixed;top:0;left:0;width:0;height:100vh;height:100svh;visibility:hidden;pointer-events:none';
+      document.body.appendChild(probe);
+    }
+    return probe.offsetHeight || window.innerHeight;
+  }
+
   // opts.maxHeight(): the tallest the picture may be inside the panel (CSS px).
   // opts.controls: element for the zoom buttons (default: below the picture).
   // opts.start: { canvas, w, h } picture to show until this one's content arrives.
@@ -89,7 +103,7 @@ QC.define('preview', function (QC) {
         availH = stage.clientHeight;
       } else {
         availW = host.clientWidth || n[0];
-        availH = Math.max(220, opts.maxHeight ? opts.maxHeight() : window.innerHeight * 0.6);
+        availH = Math.max(220, opts.maxHeight ? opts.maxHeight() : screenHeight() * 0.6);
       }
       var scale = Math.min(availW / n[0], availH / n[1]);
       if (scale * dpr >= 2) scale = Math.floor(scale * dpr) / dpr;
@@ -453,5 +467,5 @@ QC.define('preview', function (QC) {
     return { setOriginal: setOriginal, setResult: setResult, layout: layout, picture: picture, destroy: destroy };
   }
 
-  return { create: create };
+  return { create: create, screenHeight: screenHeight };
 });

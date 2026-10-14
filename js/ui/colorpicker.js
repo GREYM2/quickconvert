@@ -52,7 +52,7 @@ QC.define('colorPicker', function (QC) {
     current = null;
     document.removeEventListener('pointerdown', c.onOutside, true);
     document.removeEventListener('keydown', c.onKey, true);
-    window.removeEventListener('resize', close);
+    window.removeEventListener('resize', c.onResize);
     document.removeEventListener('scroll', c.onScroll, true);
     if (c.hex && recent[0] !== c.hex) {
       recent = [c.hex].concat(recent.filter(function (x) { return x !== c.hex; })).slice(0, 7);
@@ -186,10 +186,14 @@ QC.define('colorPicker', function (QC) {
 
     c.onOutside = function (e) { if (!el.contains(e.target) && !anchor.contains(e.target)) close(); };
     c.onKey = function (e) { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
-    c.onScroll = function (e) { if (!el.contains(e.target)) close(); };
+    // Typing a hex code on a phone: the browser may scroll the field above the keyboard.
+    c.onScroll = function (e) { if (!el.contains(e.target) && document.activeElement !== hexIn) close(); };
+    // Only a width change: on phones the on-screen keyboard and the browser bars change the height.
+    var width0 = window.innerWidth;
+    c.onResize = function () { if (window.innerWidth !== width0) close(); };
     document.addEventListener('pointerdown', c.onOutside, true);
     document.addEventListener('keydown', c.onKey, true);
-    window.addEventListener('resize', close);
+    window.addEventListener('resize', c.onResize);
     document.addEventListener('scroll', c.onScroll, true);
 
     render();

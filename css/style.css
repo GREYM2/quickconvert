@@ -64,7 +64,9 @@
 *, *::before, *::after { box-sizing: border-box; }
 [hidden] { display: none !important; }
 
-html { -webkit-text-size-adjust: 100%; }
+/* No blue flash over the whole file on phones: a tap highlights the nearest clickable box,
+   which for anything in the settings is the file row around them. Buttons press instead. */
+html { -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; }
 html.viewer-open { overflow: hidden; }
 
 body {
@@ -221,6 +223,8 @@ body { --page-w: 672px; }
 .btn-primary:hover, .btn-primary:disabled:hover { background: var(--accent); }
 .btn-quiet { background: transparent; border-color: transparent; }
 .btn-quiet:hover { background: var(--surface-2); }
+.btn:active:not(:disabled), .icon-btn:active { background: var(--surface-2); }
+.btn-primary:active:not(:disabled) { background: var(--accent); filter: brightness(.9); }
 .btn-small { min-height: 32px; padding: 4px 12px; font-size: 13px; }
 .btn-icon { display: inline-flex; }
 .btn-icon svg { width: 16px; height: 16px; }
@@ -345,8 +349,8 @@ input[type="range"]:disabled { opacity: .45; cursor: default; }
 /* ---------- file list ---------- */
 
 /* Spacing is each row's bottom margin (not a grid gap), so a removed row can fold its space away. */
-.files { list-style: none; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
-.file-panel { user-select: text; -webkit-user-select: text; }
+.files { list-style: none; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.file-panel { user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; }
 
 .file {
   margin-bottom: 10px;
@@ -418,11 +422,17 @@ input[type="range"]:disabled { opacity: .45; cursor: default; }
 .panel { position: relative; isolation: isolate; margin-top: 14px; padding-top: 18px; border-top: var(--line) solid var(--border); container-type: inline-size; }
 .col-side .panel { margin: 0; padding: 20px; border: 0; border-radius: 16px; background: var(--surface); }
 
-/* Top of the panel: the converted file's name (click to rename), then copy / reset / hide. */
-.head-main { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
-@container (min-width: 420px) { .head-main { flex-wrap: nowrap; } }
+/* Top of the panel: the converted file's name (click to rename), then copy / reset / hide.
+   Narrow: the name and hide on the first line, copy and reset on their own line under them. */
+.head-main { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 8px; }
 .panel-title { position: relative; flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
-.panel-top { flex: none; display: flex; align-items: center; gap: 8px; }
+.panel-top { order: 1; flex: 1 0 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.panel-close { flex: none; }
+@container (min-width: 560px) {
+  .head-main { flex-wrap: nowrap; }
+  .panel-title { margin-right: 8px; }
+  .panel-top { order: 0; flex: none; }
+}
 .panel-sub { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* Reads like a heading; hover or click and it's a text field. */

@@ -11,7 +11,7 @@ A small file converter that runs entirely in the browser. Files never leave your
 - Documents: see and edit the original text, with a live view of the result (table, text or rendered HTML); one handle resizes both boxes
 - HTML output: page background (text colour adjusts automatically) and font: three built-in fonts, or search all Google Fonts by part of the name
 - Rename the output by editing the name at the top of the settings; ending it with another extension (e.g. `.webp`) switches the format
-- Ctrl/Shift-click files to choose which ones Convert and "Copy settings" apply to (Ctrl+A selects all, Esc clears)
+- Ctrl/Shift-click files to choose which ones Convert and "Copy settings" apply to (Ctrl+A selects all, Esc clears). On touch screens: hold a file, then tap more files
 - "Copy settings" asks first before copying an exact pixel size to other images
 - Changing settings after converting keeps the old result downloadable (marked as outdated) until you convert again
 - Wide screens: file list on the left, the clicked file's settings on the right (hide them with ×, by clicking the file again, or Esc). Phones: settings open under the file.
