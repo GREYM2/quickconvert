@@ -28,7 +28,7 @@ QC.define('preview', function (QC) {
       '<div class="compare" style="--pos:50%">' +
         '<canvas class="compare-view" role="img" aria-label="Preview: original on the left, result on the right"></canvas>' +
         '<div class="compare-divider" role="slider" tabindex="0" aria-label="Compare original and result"' +
-          ' aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"><span class="compare-handle"></span></div>' +
+          ' aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"><span class="compare-handle"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7l-5 5 5 5M15 7l5 5-5 5"/></svg></span></div>' +
         '<span class="compare-tag compare-tag-left">Original</span>' +
         '<span class="compare-tag compare-tag-right">Result</span>' +
         '<button type="button" class="compare-full"></button>' +
@@ -110,17 +110,24 @@ QC.define('preview', function (QC) {
       cy = clamp(cy, half, 1 - half);
     }
 
+    // Draw a picture fitted inside the frame without stretching: one with another shape (the
+    // original next to a square ICO, or an unlocked resize) is letterboxed. Clipped to [from, to].
     function blit(src, sw, sh, from, to) {
       var span = 1 / z, u0 = cx - span / 2, v0 = cy - span / 2;
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(from, 0, to - from, view.height);
-      ctx.clip();
+      var frame = W / H, aspect = sw / sh, rw = 1, rh = 1;  // picture rect in 0..1 frame units
+      if (aspect > frame * 1.01) rh = frame / aspect;
+      else if (aspect < frame / 1.01) rw = aspect / frame;
+      var dx = ((1 - rw) / 2 - u0) / span * view.width, dw = rw / span * view.width;
+      var dy = ((1 - rh) / 2 - v0) / span * view.height, dh = rh / span * view.height;
+      // Only the visible part of the source is drawn.
+      var x0 = Math.max(dx, from), x1 = Math.min(dx + dw, to);
+      var y0 = Math.max(dy, 0), y1 = Math.min(dy + dh, view.height);
+      if (x1 <= x0 || y1 <= y0) return;
       // Magnified: hard pixels, so nearest vs smooth resampling is visible. Otherwise smooth.
-      ctx.imageSmoothingEnabled = view.width / (sw * span) < 2;
+      ctx.imageSmoothingEnabled = dw / sw < 2;
       ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(src, u0 * sw, v0 * sh, span * sw, span * sh, 0, 0, view.width, view.height);
-      ctx.restore();
+      ctx.drawImage(src, (x0 - dx) / dw * sw, (y0 - dy) / dh * sh, (x1 - x0) / dw * sw, (y1 - y0) / dh * sh,
+        x0, y0, x1 - x0, y1 - y0);
     }
 
     function draw() {
@@ -273,7 +280,7 @@ QC.define('preview', function (QC) {
       fullBtn.title = full ? 'Exit full screen (Esc)' : 'Full-screen preview';
     }
 
-    function onKey(e) { if (e.key === 'Escape') exitFull(); }
+    function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); exitFull(); } }
 
     function enterFull() {
       if (full) return;

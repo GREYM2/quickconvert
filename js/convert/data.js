@@ -5,6 +5,8 @@
 QC.define('data', function (QC) {
   'use strict';
 
+  var PREVIEW_ROWS = 200;
+
   /* ---------- CSV ---------- */
 
   // Pick the most frequent of , ; TAB in the first line (outside quotes).
@@ -312,7 +314,9 @@ QC.define('data', function (QC) {
     progress(0.95);
     var mime = QC.formats.get(to).mime;
     if (typeof out === 'string' && to !== 'xlsx') mime += ';charset=utf-8';
-    return { blob: new Blob([out], { type: mime }), rows: count, note: note };
+    // First rows for the page to show as a table (header + up to PREVIEW_ROWS).
+    var preview = rows ? rows.slice(0, PREVIEW_ROWS + 1) : undefined;
+    return { blob: new Blob([out], { type: mime }), rows: count, note: note, preview: preview };
   }
 
   return {

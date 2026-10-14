@@ -5,10 +5,15 @@ A small file converter that runs entirely in the browser. Files never leave your
 - **Images:** JPG, PNG, WebP, GIF (first frame), BMP, ICO → JPG, PNG, WebP, BMP, ICO
 - **Data:** CSV ↔ JSON ↔ XLSX, TXT → HTML, Markdown → HTML or TXT
 - Batch conversion, "Download all" as a ZIP
-- Per-image settings: output format, quality, file size (auto or a target), resize (percent or pixels), resampling
+- Add files by dropping, choosing, or pasting (Ctrl+V)
+- Per-image settings: output format, quality (slider or number), file size (auto or a target), background colour for transparent pictures going to JPG/BMP, resize (percent or pixels), resampling
 - Live before/after preview: drag the divider, scroll to zoom, drag to move, pinch on touch screens, full-screen view
-- "Copy settings to all files", with a warning before copying an exact pixel size to other images
-- Wide screens: file list on the left; the selected file's settings on the right (click a file name to switch). Phones: settings open under the file.
+- Documents: see and edit the original text, with a live view of the result (table, text or rendered HTML)
+- Rename the output by editing the name at the top of the settings; ending it with another extension (e.g. `.webp`) switches the format
+- Ctrl/Shift-click files to choose which ones Convert and "Copy settings" apply to (Ctrl+A selects all, Esc clears)
+- "Copy settings" asks first before copying an exact pixel size to other images
+- Changing settings after converting keeps the old result downloadable (marked as outdated) until you convert again
+- Wide screens: file list on the left, the clicked file's settings on the right (hide them with ×, by clicking the file again, or Esc). Phones: settings open under the file.
 
 Plain HTML, CSS and JavaScript. No framework, no build step, no `npm install`.
 
@@ -49,7 +54,7 @@ js/convert/data.js      CSV parser/writer, JSON tables, XLSX (SheetJS), Markdown
 js/convert/bmp.js       hand-written 24-bit BMP encoder
 js/convert/ico.js       ICO writer (PNG inside ICO)
 js/convert/zip.js       minimal ZIP writer (stored, no compression)
-js/ui/panel.js          settings panel (any file) and the two-step live image preview
+js/ui/panel.js          settings panel (any file): image preview pipeline, document view and editing
 js/ui/preview.js        before/after canvas: divider, zoom and pan, full-screen view
 js/ui/theme.js          light/dark toggle (follows the system by default)
 tests/index.html        in-browser unit and end-to-end tests
@@ -98,9 +103,10 @@ The whole page (HTML, CSS, JS) is about 100 KB, or about 35 KB gzipped as GitHub
 - **Target size:** JPG and WebP search quality (about 7 encodes). PNG and BMP are lossless, so the only way to shrink them is to scale them down; the app does that and says so. If a target can't be reached, the app shows the smallest possible size and lets you accept it or change the target.
 - The preview estimate comes from a copy downscaled to at most 1200 px, so it's approximate. The "Actual" size next to it comes from a full-resolution encode, and that result is reused when you press Convert.
 - "Bicubic / high" uses the browser's `imageSmoothingQuality = "high"`. The exact filter depends on the browser.
-- Transparent areas become white in JPG and BMP, since those formats have no transparency.
+- JPG and BMP have no transparency: transparent areas get the background colour you pick (white by default). The option only appears for pictures that actually have transparent areas.
 - XLSX → CSV/JSON converts the first sheet (the app tells you when there are more).
 - CSV output has a UTF-8 BOM, so Excel opens accented and non-Latin text correctly.
+- Animations are short (under 0.3 s) and switch off when the system asks for reduced motion. Nothing waits on an animation: if a tab isn't drawing, timers finish the work.
 - ZIP files are stored without compression (images are already compressed). Limit: 65,535 files and 4 GB.
 - ICO output is a single image of up to 256 × 256, fitted and centred on a transparent square.
 - Needs `OffscreenCanvas` for images: Chrome/Edge 69+, Firefox 105+, Safari 16.4+. WebP output is hidden in browsers that can't encode it (Safari). Data conversions work in older browsers too.

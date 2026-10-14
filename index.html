@@ -55,16 +55,14 @@
 
     <button id="drop" class="drop" type="button">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M7 9l5-5 5 5M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>
-      <span class="drop-title">Drop files here or click to choose.</span>
+      <span class="drop-title">Drop or paste files here, or click to choose.</span>
       <span class="drop-sub">JPG · PNG · WebP · GIF · BMP · ICO · CSV · JSON · XLSX · TXT · Markdown</span>
     </button>
     <input id="file-input" type="file" multiple hidden>
   </div>
 
   <aside id="side" class="col-side" aria-label="File settings">
-    <div class="side-inner">
-      <p id="side-empty" class="side-empty"></p>
-    </div>
+    <div class="side-inner"></div>
   </aside>
 </main>
 
@@ -96,22 +94,35 @@
 <template id="tpl-panel">
   <div class="panel">
     <div class="panel-head">
-      <div class="panel-title">
-        <span class="panel-name"></span>
-        <span class="panel-sub muted"></span>
+      <div class="head-main">
+        <div class="panel-title">
+          <label class="name-edit" title="Rename the converted file">
+            <input type="text" class="p-name" spellcheck="false" autocomplete="off" aria-label="Name of the converted file">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/></svg>
+          </label>
+          <span class="panel-sub muted"></span>
+          <p class="name-tip"></p>
+        </div>
+        <div class="panel-top">
+          <button type="button" class="btn copy-all">Copy settings to all files</button>
+          <button type="button" class="btn btn-quiet reset">Reset</button>
+          <button type="button" class="icon-btn panel-close" aria-label="Hide settings" title="Hide settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
       </div>
-      <div class="panel-top">
-        <button type="button" class="btn copy-all">Copy settings to all files</button>
-        <button type="button" class="btn btn-quiet reset" data-image>Reset</button>
+      <div class="head-confirm" hidden>
+        <div class="confirm-text">
+          <span class="confirm-question"></span>
+          <span class="muted">Other images may get stretched or blurred.</span>
+        </div>
+        <div class="confirm-actions">
+          <button type="button" class="btn btn-quiet copy-cancel">Cancel</button>
+          <button type="button" class="btn copy-except">All except size</button>
+          <button type="button" class="btn btn-primary copy-everything">Everything</button>
+        </div>
       </div>
-    </div>
-    <div class="copy-warn" role="alert" hidden>
-      <p class="copy-warn-text"></p>
-      <div class="copy-warn-actions">
-        <button type="button" class="btn btn-quiet copy-cancel">Cancel</button>
-        <button type="button" class="btn copy-except">All except size</button>
-        <button type="button" class="btn btn-primary copy-everything">Everything</button>
-      </div>
+      <p class="hint is-warn p-name-note" hidden></p>
     </div>
 
     <div class="panel-body">
@@ -120,15 +131,14 @@
           <div class="field">
             <span class="field-label">Convert to</span>
             <select class="select p-target" aria-label="Convert to"></select>
-            <p class="hint data-note" hidden>No other settings for this format.</p>
           </div>
 
           <div class="field" data-image data-show="quality">
-            <label class="field-label">
-              <span>Quality</span>
-              <output class="q-value"></output>
-            </label>
-            <input type="range" class="q-range" min="1" max="100" step="1" aria-label="Quality">
+            <span class="field-label">Quality</span>
+            <div class="q-row">
+              <input type="range" class="q-range" min="1" max="100" step="1" aria-label="Quality">
+              <input type="number" class="input q-num" min="1" max="100" step="1" inputmode="numeric" aria-label="Quality, 1 to 100">
+            </div>
             <p class="hint q-found" hidden></p>
           </div>
 
@@ -143,6 +153,17 @@
               <select class="select t-unit" aria-label="Unit"><option>KB</option><option>MB</option></select>
             </div>
             <p class="hint t-note" hidden></p>
+          </fieldset>
+
+          <fieldset class="field" data-image data-show="background">
+            <legend class="field-label">Background</legend>
+            <div class="swatches">
+              <!-- Image content colours, not UI colours. -->
+              <label class="swatch" title="White"><input type="radio" class="bg-pick" value="#ffffff" aria-label="White"><span style="--c:#ffffff"></span></label>
+              <label class="swatch" title="Black"><input type="radio" class="bg-pick" value="#000000" aria-label="Black"><span style="--c:#000000"></span></label>
+              <label class="swatch swatch-custom" title="Pick a colour"><input type="radio" class="bg-pick" value="custom" aria-label="Custom colour"><span class="bg-custom-chip"></span><input type="color" class="bg-color" aria-label="Choose colour"></label>
+            </div>
+            <p class="hint bg-hint"></p>
           </fieldset>
 
           <fieldset class="field" data-image>
@@ -170,12 +191,11 @@
 
           <div class="field" data-image>
             <span class="field-label">Resampling</span>
-            <select class="select rs" aria-label="Resampling">
+            <select class="select rs" aria-label="Resampling" title="Used when enlarging and when shrinking. &quot;High&quot; is the browser's best filter (bicubic or similar, depends on the browser).">
               <option value="nearest">Nearest: pixelated, for pixel art</option>
               <option value="bilinear">Bilinear: smooth</option>
               <option value="high">Bicubic / high: smoothest</option>
             </select>
-            <p class="hint" title="Used when enlarging and when shrinking. The exact high-quality filter depends on the browser.">"High" is the browser's best filter (bicubic or similar).</p>
           </div>
         </div>
       </div>
@@ -183,8 +203,20 @@
       <div class="panel-preview" data-image>
         <div class="preview-host"></div>
         <div class="preview-foot">
-          <p class="preview-stats" aria-live="polite"></p>
           <div class="zoom-slot"></div>
+          <p class="preview-stats" aria-live="polite"></p>
+        </div>
+      </div>
+
+      <div class="panel-doc" data-doc>
+        <div class="doc-pane">
+          <div class="doc-head"><span class="field-label">Original</span><span class="hint doc-src-note"></span></div>
+          <textarea class="doc-src doc-box" spellcheck="false" aria-label="Original content"></textarea>
+          <div class="doc-src-view doc-box" hidden></div>
+        </div>
+        <div class="doc-pane">
+          <div class="doc-head"><span class="field-label">Result</span><span class="hint doc-out-note" aria-live="polite"></span></div>
+          <div class="doc-out doc-box"></div>
         </div>
       </div>
     </div>

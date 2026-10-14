@@ -20,7 +20,8 @@ QC.define('image', function (QC) {
       targetOn: false, targetValue: '', targetUnit: 'KB',
       resizeMode: 'none', percent: 100,
       width: '', height: '', lockAspect: true, lockDriver: 'w',
-      resample: 'high'
+      resample: 'high',
+      background: '#ffffff'  // fills transparent areas in JPG/BMP (image content, not a UI colour)
     };
   }
 
@@ -85,18 +86,18 @@ QC.define('image', function (QC) {
     }
   }
 
-  // Draw `bitmap` into a new canvas of `size`, using the chosen resampling.
-  function draw(bitmap, size, fmt, resample) {
+  // Draw `bitmap` into a new canvas of `size`, using the chosen resampling. Formats without
+  // transparency get the background colour behind the picture.
+  function draw(bitmap, size, fmt, s) {
     var box = fmt === 'ico' ? icoSize(size) : size;
     var canvas = new OffscreenCanvas(box.width, box.height);
     var ctx = canvas.getContext('2d');
     if (!ctx) throw QC.error('encode', 'Canvas is not available.');
     if (NO_ALPHA[fmt]) {
-      // White matte for formats without transparency (image content, not UI colour).
-      ctx.fillStyle = '#ffffff';
+      ctx.fillStyle = s.background || '#ffffff';
       ctx.fillRect(0, 0, box.width, box.height);
     }
-    smoothing(ctx, resample);
+    smoothing(ctx, s.resample);
     if (fmt === 'ico') {
       var k = box.width / Math.max(size.width, size.height);
       var dw = Math.max(1, Math.round(size.width * k)), dh = Math.max(1, Math.round(size.height * k));
@@ -163,7 +164,7 @@ QC.define('image', function (QC) {
     var canvas, blob;
 
     if (!target) {
-      canvas = draw(bitmap, size, fmt, s.resample);
+      canvas = draw(bitmap, size, fmt, s);
       report(0.6);
       blob = await encode(canvas, fmt, s.quality);
       return { blob: blob, width: canvas.width, height: canvas.height, quality: LOSSY[fmt] ? s.quality : undefined };
@@ -172,7 +173,7 @@ QC.define('image', function (QC) {
     var passes = 0;
     if (LOSSY[fmt]) {
       // Lossy: search the highest quality that fits.
-      canvas = draw(bitmap, size, fmt, s.resample);
+      canvas = draw(bitmap, size, fmt, s);
       var q = await searchMax(1, 100, async function (quality) {
         var b = await encode(canvas, fmt, quality);
         report(0.2 + 0.8 * Math.min(1, ++passes / 8));
@@ -184,7 +185,7 @@ QC.define('image', function (QC) {
     }
 
     // Lossless (PNG, BMP): quality does nothing, so the only lever is dimensions.
-    canvas = draw(bitmap, size, fmt, s.resample);
+    canvas = draw(bitmap, size, fmt, s);
     blob = await encode(canvas, fmt);
     report(0.25);
     if (blob.size <= target) return { blob: blob, width: size.width, height: size.height, scale: 100, mode: 'scale' };
@@ -192,7 +193,7 @@ QC.define('image', function (QC) {
     var guess = Math.floor(Math.sqrt(target / blob.size) * 100);
     var r = await searchMax(1, 99, async function (pct) {
       var scaled = { width: Math.max(1, Math.round(size.width * pct / 100)), height: Math.max(1, Math.round(size.height * pct / 100)) };
-      var b = await encode(draw(bitmap, scaled, fmt, s.resample), fmt);
+      var b = await encode(draw(bitmap, scaled, fmt, s), fmt);
       report(0.25 + 0.75 * Math.min(1, ++passes / 8));
       return { blob: b, fits: b.size <= target, scale: pct, width: scaled.width, height: scaled.height };
     }, guess);
@@ -214,19 +215,28 @@ QC.define('image', function (QC) {
     }
   }
 
-  // Decode once and return a copy no larger than PREVIEW_MAX, plus the original size.
+  // Any pixel that isn't fully opaque?
+  function anyTransparent(ctx, w, h) {
+    var d = ctx.getImageData(0, 0, w, h).data;
+    for (var i = 3; i < d.length; i += 4) if (d[i] < 255) return true;
+    return false;
+  }
+
+  // Decode once and return a copy no larger than PREVIEW_MAX, the original size, and whether
+  // the picture has transparency (checked on the copy, which is plenty to tell).
   async function prepare(source) {
     if (!supported()) throw QC.error('unsupported', 'Image conversion needs a newer browser (OffscreenCanvas).');
     var bitmap = await decode(source);
     var w = bitmap.width, h = bitmap.height;
     var k = Math.min(1, PREVIEW_MAX / Math.max(w, h));
-    if (k === 1) return { bitmap: bitmap, width: w, height: h };
     var canvas = new OffscreenCanvas(Math.max(1, Math.round(w * k)), Math.max(1, Math.round(h * k)));
     var ctx = canvas.getContext('2d');
     smoothing(ctx, 'high');
     ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    var alpha = anyTransparent(ctx, canvas.width, canvas.height);
+    if (k === 1) return { bitmap: bitmap, width: w, height: h, hasAlpha: alpha };
     bitmap.close();
-    return { bitmap: canvas.transferToImageBitmap(), width: w, height: h };
+    return { bitmap: canvas.transferToImageBitmap(), width: w, height: h, hasAlpha: alpha };
   }
 
   /*
@@ -244,7 +254,7 @@ QC.define('image', function (QC) {
       var real = fmt === 'ico' ? icoSize(out) : out;
       var k = Math.min(1, PREVIEW_MAX / Math.max(out.width, out.height));
       var size = { width: Math.max(1, Math.round(out.width * k)), height: Math.max(1, Math.round(out.height * k)) };
-      var canvas = draw(bitmap, size, fmt, s.resample);
+      var canvas = draw(bitmap, size, fmt, s);
       var ratio = (real.width * real.height) / (canvas.width * canvas.height);
       var target = fmt === 'ico' ? 0 : targetBytes(s);
       var quality = s.quality;
@@ -272,6 +282,6 @@ QC.define('image', function (QC) {
 
   return {
     supported: supported, defaults: defaults, targetBytes: targetBytes, computeSize: computeSize,
-    convert: convert, prepare: prepare, preview: preview, LOSSY: LOSSY, MAX_SIDE: MAX_SIDE
+    convert: convert, prepare: prepare, preview: preview, LOSSY: LOSSY, NO_ALPHA: NO_ALPHA, MAX_SIDE: MAX_SIDE
   };
 }, { worker: true });

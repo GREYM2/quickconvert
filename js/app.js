@@ -48,16 +48,79 @@ QC.define('app', function (QC) {
     return e;
   }
 
+  /* ---------- motion ---------- */
+
+  var EASE = 'cubic-bezier(.2, .8, .2, 1)';
+  var reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  function calm() { return reducedMotion.matches || typeof Element.prototype.animate !== 'function'; }
+
+  // Run `done` when the animation ends, or after a timer if the page isn't animating
+  // (background tab): the work must never wait on the animation.
+  function afterAnim(anim, ms, done) {
+    var ran = false;
+    function once() { if (!ran) { ran = true; done(); } }
+    anim.onfinish = once;
+    setTimeout(once, ms + 80);
+  }
+
+  // Change the layout, then let the page parts that moved glide from where they were
+  // (a "FLIP" animation: First, Last, Invert, Play).
+  function glide(change) {
+    var parts = calm() ? [] : [document.querySelector('.brand'), document.getElementById('theme-toggle'),
+      el.summary, el.actions, document.querySelector('.col-main')];
+    var before = parts.map(function (n) { return n.getBoundingClientRect(); });
+    change();
+    parts.forEach(function (n, i) {
+      var a = n.getBoundingClientRect(), b = before[i];
+      if (!a.width || !b.width) return; // hidden before or after
+      var dx = b.left - a.left, dy = b.top - a.top;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+      n.animate([{ transform: 'translate(' + dx + 'px, ' + dy + 'px)' }, { transform: 'none' }], { duration: 260, easing: EASE });
+    });
+  }
+
+  // A removed file folds away instead of vanishing.
+  function removeRow(row) {
+    if (calm()) { row.remove(); return; }
+    var cs = getComputedStyle(row);
+    row.style.overflow = 'hidden';
+    row.style.pointerEvents = 'none';
+    var anim = row.animate([
+      { opacity: 1, height: row.offsetHeight + 'px', paddingTop: cs.paddingTop, paddingBottom: cs.paddingBottom, marginBottom: cs.marginBottom },
+      { opacity: 0, height: '0px', paddingTop: '0px', paddingBottom: '0px', marginBottom: '0px' }
+    ], { duration: 180, easing: 'ease-in', fill: 'forwards' });
+    afterAnim(anim, 180, function () { row.remove(); });
+  }
+
   var ICON = {
     check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
     alert: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/></svg>',
-    download: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>'
+    download: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>',
+    history: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.3-5.7M4 4v4h4"/><path d="M12 8v4l3 2"/></svg>'
   };
 
-  function settingsKey(item) { return JSON.stringify([item.target, item.kind === 'image' ? item.settings : null]); }
+  // Same key = same output, so a cached result can be reused.
+  function settingsKey(item) {
+    return JSON.stringify([item.target, item.kind === 'image' ? item.settings : item.editVersion]);
+  }
 
   function jobOptions(item) {
     return { from: item.type, to: item.target, settings: Object.assign({}, item.settings) };
+  }
+
+  // The file to convert: the original, or the user's edited text.
+  function sourceFile(item) {
+    return item.editedText != null ? new File([item.editedText], item.file.name, { type: item.file.type }) : item.file;
+  }
+
+  // "photo.png" -> "photo.jpg", or the name typed in "Save as".
+  function nameFor(item, ext) {
+    return item.outBase ? item.outBase + '.' + ext : QC.formats.outputName(item.file.name, ext);
+  }
+
+  function metaText(item) {
+    var f = QC.formats.get(item.type);
+    return formatBytes(item.file.size) + ' · ' + (f ? f.desc : 'Unknown type') + (item.editedText != null ? ' · edited' : '');
   }
 
   function detectCaps() {
@@ -89,7 +152,8 @@ QC.define('app', function (QC) {
       target: f ? QC.formats.defaultOutput(f.key, caps) : null,
       settings: QC.image.defaults(), dims: null, previewSource: null,
       status: 'idle', progress: 0, error: '', permanent: false, run: 0,
-      result: null, pending: null, cache: null
+      result: null, outdated: false, pending: null, cache: null,
+      outBase: null, editedText: null, editVersion: 0
     };
     if (!f) fail(item, 'Unsupported format.', true);
     else if (f.kind === 'image' && !caps.offscreen) fail(item, 'Images need a newer browser (no OffscreenCanvas).', true);
@@ -100,12 +164,18 @@ QC.define('app', function (QC) {
   function buildRow(item, f) {
     var row = document.getElementById('tpl-row').content.firstElementChild.cloneNode(true);
     var q = function (s) { return row.querySelector(s); };
-    item.dom = { row: row, target: q('.file-target'), gear: q('.file-gear'), status: q('.file-status'), panel: q('.file-panel') };
+    item.dom = { row: row, target: q('.file-target'), gear: q('.file-gear'), status: q('.file-status'),
+      panel: q('.file-panel'), meta: q('.file-meta') };
 
     q('.file-name').textContent = item.file.name;
     q('.file-name').title = item.file.name;
-    q('.file-name').addEventListener('click', function () { pick(item); });
-    q('.file-meta').textContent = formatBytes(item.file.size) + ' · ' + (f ? f.desc : 'Unknown type');
+    q('.file-name').addEventListener('click', function (e) { onFileClick(item, e); });
+    item.dom.meta.textContent = metaText(item);
+    // Clicking anywhere on the file (except its controls and open settings) works like its name.
+    row.addEventListener('click', function (e) {
+      if (e.target.closest('button, a, select, input, textarea, label, iframe, .file-panel')) return;
+      onFileClick(item, e);
+    });
     if (item.file.size > LARGE_FILE) q('.file-warn').hidden = false;
 
     var select = item.dom.target;
@@ -120,8 +190,8 @@ QC.define('app', function (QC) {
       if (panel && panel.item === item) panel.ctrl.refresh();
     });
 
-    // No settings for this file: keep the gear's space so the format menus line up.
-    if (item.kind !== 'image' || item.permanent) item.dom.gear.style.visibility = 'hidden';
+    // Unsupported file: keep the gear's space so the format menus line up.
+    if (item.permanent) item.dom.gear.style.visibility = 'hidden';
     item.dom.gear.addEventListener('click', function () { pick(item); });
     q('.file-remove').addEventListener('click', function () { removeItem(item); });
   }
@@ -135,20 +205,23 @@ QC.define('app', function (QC) {
   function dropResult(item) {
     if (item.result) URL.revokeObjectURL(item.result.url);
     item.result = null;
+    item.outdated = false;
     item.pending = null;
   }
 
-  // Settings or format changed: any finished result is now stale.
+  // Settings, text or format changed. A finished result stays downloadable, marked as outdated,
+  // until the file is converted again.
   function invalidate(item) {
     if (item.permanent) return;
     item.run++; // results of jobs already running for this item will be ignored
     QC.pool.cancel(function (j) { return j.owner === item.id && j.task === 'convert' && !j.key; });
-    if (item.status !== 'idle') {
-      dropResult(item);
-      item.status = 'idle';
-      item.error = '';
-      render(item);
-    }
+    item.dom.meta.textContent = metaText(item);
+    var changed = item.status !== 'idle' || (item.result && !item.outdated);
+    item.pending = null;
+    item.status = 'idle';
+    item.error = '';
+    if (item.result) item.outdated = true;
+    if (changed) render(item);
     updateToolbar();
   }
 
@@ -157,20 +230,28 @@ QC.define('app', function (QC) {
     if (panel && panel.item === item) {
       var list = Array.from(items.values()), i = list.indexOf(item);
       next = list[i + 1] || list[i - 1] || null;
-      closePanel();
+      closePanel(true);
     }
     item.run++;
     QC.pool.cancel(function (j) { return j.owner === item.id; });
     dropResult(item);
     item.cache = null;
+    selection.delete(item);
+    if (anchor === item) anchor = null;
     items.delete(item.id);
-    item.dom.row.remove();
+    removeRow(item.dom.row);
     updateToolbar();
     ensureSelection(next);
+    updateSide();
   }
 
   function clearAll() {
-    Array.from(items.values()).forEach(removeItem);
+    var all = Array.from(items.values());
+    closePanel(true);
+    clearing = true; // don't open the next file's settings for every file removed
+    all.forEach(removeItem);
+    clearing = false;
+    updateSide();
   }
 
   /* ---------- rendering ---------- */
@@ -180,6 +261,15 @@ QC.define('app', function (QC) {
     box.className = 'file-status is-' + item.status;
     box.textContent = '';
     switch (item.status) {
+      case 'idle':
+        if (!item.result) break;
+        box.classList.add('is-outdated');
+        box.appendChild(h('span', { class: 'status-icon', html: ICON.history }));
+        box.appendChild(h('span', { class: 'status-text', text: 'Settings changed. Previous result: ' +
+          formatBytes(item.result.blob.size) + '. Convert again to update.' }));
+        box.appendChild(h('a', { class: 'btn btn-small btn-outdated', href: item.result.url, download: item.result.name,
+          title: 'Previous result: ' + item.result.name }, [h('span', { class: 'btn-icon', html: ICON.download }), 'Download old']));
+        break;
       case 'queued':
         box.appendChild(h('span', { class: 'muted', text: 'Queued' }));
         break;
@@ -241,13 +331,20 @@ QC.define('app', function (QC) {
     var list = Array.from(items.values());
     el.summary.hidden = el.actions.hidden = !list.length;
     el.drop.classList.toggle('is-compact', list.length > 0);
-    updateSide();
     var total = list.reduce(function (n, i) { return n + i.file.size; }, 0);
-    el.summary.textContent = list.length + (list.length === 1 ? ' file · ' : ' files · ') + formatBytes(total);
-    var todo = list.filter(canConvert).length;
+    el.summary.textContent = '';
+    if (selection.size) {
+      el.summary.appendChild(document.createTextNode(selection.size + ' of ' + list.length + ' selected · '));
+      el.summary.appendChild(h('button', { type: 'button', class: 'link-btn', text: 'Clear selection', onclick: clearSelection }));
+    } else {
+      el.summary.textContent = list.length + (list.length === 1 ? ' file · ' : ' files · ') + formatBytes(total);
+    }
+    var todo = scope().filter(canConvert).length;
     var busy = list.some(function (i) { return i.status === 'queued' || i.status === 'converting'; });
+    var label = selection.size > 1 ? 'Convert ' + selection.size + ' files'
+      : selection.size === 1 || list.length === 1 ? 'Convert file' : 'Convert all files';
     el.convert.disabled = !todo;
-    el.convert.textContent = busy && !todo ? 'Converting…' : todo > 1 ? 'Convert ' + todo + ' files' : 'Convert';
+    el.convert.textContent = busy && !todo ? 'Converting…' : label;
     var done = list.filter(function (i) { return i.status === 'done'; }).length;
     el.zip.hidden = done < 2;
   }
@@ -258,15 +355,16 @@ QC.define('app', function (QC) {
 
   /* ---------- conversion ---------- */
 
+  // Converts the selected files, or all files when none are selected.
   function convertAll() {
-    items.forEach(function (item) { if (canConvert(item)) convertItem(item); });
+    scope().forEach(function (item) { if (canConvert(item)) convertItem(item); });
     updateToolbar();
   }
 
   function convertItem(item) {
     var run = ++item.run;
     var key = settingsKey(item);
-    dropResult(item);
+    item.pending = null;
     if (item.cache && item.cache.key === key) { finish(item, item.cache.result); return; }
 
     item.status = 'queued';
@@ -274,7 +372,7 @@ QC.define('app', function (QC) {
     item.error = '';
     render(item);
     var job = {
-      task: 'convert', owner: item.id, file: item.file, options: jobOptions(item),
+      task: 'convert', owner: item.id, file: sourceFile(item), options: jobOptions(item),
       onProgress: function (p) {
         if (run !== item.run) return;
         item.progress = p;
@@ -284,7 +382,7 @@ QC.define('app', function (QC) {
     };
     (item.kind === 'image' ? QC.pool.runImage(job) : QC.pool.run(job)).then(function (r) {
       if (run !== item.run || !items.has(item.id)) return;
-      if (item.kind === 'image') item.cache = { key: key, result: r };
+      item.cache = { key: key, result: r };
       finish(item, r);
     }, function (err) {
       if (run !== item.run || !items.has(item.id)) return;
@@ -297,7 +395,6 @@ QC.define('app', function (QC) {
 
   function finish(item, r) {
     if (r.unreachable) {
-      dropResult(item);
       item.status = 'attention';
       item.pending = r;
     } else {
@@ -309,7 +406,7 @@ QC.define('app', function (QC) {
 
   function setResult(item, r) {
     dropResult(item);
-    item.result = { blob: r.blob, url: URL.createObjectURL(r.blob), name: QC.formats.outputName(item.file.name, item.target), info: r };
+    item.result = { blob: r.blob, url: URL.createObjectURL(r.blob), ext: item.target, name: nameFor(item, item.target), info: r };
     item.status = 'done';
   }
 
@@ -340,9 +437,11 @@ QC.define('app', function (QC) {
 
   /* ---------- settings panel ---------- */
 
-  // Wide screens: one file is always selected and its panel fills the side column.
+  // Wide screens: the selected file's panel is in a side column, which can be hidden (×).
   // Phones: the panel opens inside the file's row and can be closed again.
   var RESIZE_KEYS = ['resizeMode', 'percent', 'width', 'height', 'lockAspect', 'lockDriver'];
+  var sideHidden = false;   // the user hid the side column; don't reopen it by itself
+  var clearing = false;
 
   var panelCtx = {
     onChange: invalidate,
@@ -351,7 +450,19 @@ QC.define('app', function (QC) {
       invalidate(item);
     },
     onApplyAll: applyToAll,
+    onClose: retract,
+    // Renaming changes no content, so a finished result just gets the new name.
+    onRename: function (item) {
+      if (!item.result) return;
+      item.result.name = nameFor(item, item.result.ext);
+      render(item);
+    },
+    copyLabel: function (item) {
+      return copyTargets(item).scoped ? 'Copy settings to selected files' : 'Copy settings to all files';
+    },
     outputs: function (item) { return QC.formats.outputsFor(item.type, caps); },
+    outputName: function (item) { return nameFor(item, item.target); },
+    sourceFile: sourceFile,
     settingsKey: settingsKey,
     jobOptions: jobOptions,
     formatBytes: formatBytes,
@@ -360,19 +471,58 @@ QC.define('app', function (QC) {
 
   function panelHost(item) { return wide.matches ? el.sideInner : item.dom.panel; }
 
-  function closePanel() {
+  // Two columns only while a panel is shown on a wide screen (see body.show-side in style.css).
+  // Switching between the layouts glides; the side column slides in.
+  function updateSide() {
+    var show = !!panel;
+    if (document.body.classList.contains('show-side') === show) return;
+    glide(function () { document.body.classList.toggle('show-side', show); });
+    if (show && wide.matches && !calm()) {
+      el.sideInner.animate([{ opacity: 0, transform: 'translateX(24px)' }, { opacity: 1, transform: 'none' }], { duration: 240, easing: EASE });
+    }
+  }
+
+  // keepSide: another panel opens right away, so don't collapse the layout in between.
+  function closePanel(keepSide) {
     if (!panel) return;
     panel.ctrl.close();
     panel.item.dom.gear.setAttribute('aria-expanded', 'false');
     panel.item.dom.row.classList.remove('is-open');
     panel = null;
-    updateSide();
+    if (!keepSide) updateSide();
+  }
+
+  // Hide the settings because the user deselected the file (×, click it again, Esc).
+  // On wide screens the side column slides out first, then the layout glides back.
+  var leaving = null;
+  function retract() {
+    if (!panel) return;
+    if (!wide.matches) { closePanel(); return; }
+    sideHidden = true;
+    if (calm()) { closePanel(); return; }
+    var ctrl = panel.ctrl;
+    panel.item.dom.gear.setAttribute('aria-expanded', 'false');
+    panel.item.dom.row.classList.remove('is-open');
+    panel = null;
+    var anim = el.sideInner.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateX(24px)' }],
+      { duration: 160, easing: 'ease-in', fill: 'forwards' });
+    var l = leaving = { anim: anim, ctrl: ctrl };
+    afterAnim(anim, 160, function () { if (leaving === l) { finishLeaving(); updateSide(); } });
+  }
+
+  function finishLeaving() {
+    if (!leaving) return;
+    var l = leaving;
+    leaving = null;
+    l.ctrl.close();
+    l.anim.cancel();
   }
 
   function openPanelFor(item, focusSelector) {
     if (item.permanent) return;
+    finishLeaving();
     if (!panel || panel.item !== item) {
-      closePanel();
+      closePanel(true);
       panel = { item: item, ctrl: QC.panel.open(item, panelHost(item), panelCtx) };
       item.dom.gear.setAttribute('aria-expanded', 'true');
       item.dom.row.classList.add('is-open');
@@ -384,32 +534,87 @@ QC.define('app', function (QC) {
     }
   }
 
-  // File name or gear clicked. On phones a second click closes the panel again.
+  // Gear or a plain click on a file. On phones a second click closes the panel again.
   function pick(item) {
+    sideHidden = false;
     if (!wide.matches && panel && panel.item === item) closePanel();
     else openPanelFor(item);
   }
 
-  // Wide screens never show an empty side column while there are files to show.
+  // Wide screens open the first file's settings by themselves, unless the user hid them.
   function ensureSelection(preferred) {
-    if (!wide.matches || panel) return;
+    if (!wide.matches || panel || sideHidden || clearing) return;
     var list = Array.from(items.values()).filter(function (i) { return !i.permanent; });
     var item = preferred && !preferred.permanent ? preferred : list[0];
     if (item) openPanelFor(item);
   }
 
-  function updateSide() {
-    el.sideEmpty.hidden = !!panel;
-    el.sideEmpty.textContent = items.size
-      ? 'These files can\'t be converted here.'
-      : 'Add files on the left. Settings and a live preview for the selected file appear here.';
+  /* ---------- choosing files (Ctrl / Shift click, like a file manager) ---------- */
+
+  // A plain click only shows a file's settings; Convert still means all files.
+  // Ctrl/Cmd-click toggles files and Shift-click selects a range: then Convert (and Copy
+  // settings) apply to the selected files only.
+  var selection = new Set();
+  var anchor = null;        // last file clicked by the user, where a Shift range starts
+
+  function onFileClick(item, e) {
+    var list = Array.from(items.values());
+    if (e.shiftKey && anchor && items.has(anchor.id)) {
+      var a = list.indexOf(anchor), b = list.indexOf(item);
+      if (!(e.ctrlKey || e.metaKey)) selection.clear();
+      list.slice(Math.min(a, b), Math.max(a, b) + 1).forEach(function (i) { if (!i.permanent) selection.add(i); });
+    } else if (e.ctrlKey || e.metaKey) {
+      // Starting a selection: the file clicked before counts as chosen, like in Explorer.
+      if (!selection.size && anchor && anchor !== item && items.has(anchor.id) && !anchor.permanent) selection.add(anchor);
+      anchor = item;
+      if (selection.has(item)) {
+        selection.delete(item);
+        renderSelection();
+        if (panel && panel.item === item) retract();   // deselected the file on show
+        return;
+      }
+      if (!item.permanent) selection.add(item);
+    } else {
+      var shown = panel && panel.item === item;
+      selection.clear();
+      anchor = item;
+      renderSelection();
+      if (shown && wide.matches) retract();            // clicking the shown file again deselects it
+      else pick(item);
+      return;
+    }
+    renderSelection();
+    if (wide.matches) { sideHidden = false; openPanelFor(item); }
+  }
+
+  // Nothing chosen any more; if the file on show was one of them, its settings retract too.
+  function clearSelection() {
+    if (!selection.size) return;
+    var shownWasSelected = panel && selection.has(panel.item);
+    selection.clear();
+    renderSelection();
+    if (shownWasSelected) retract();
+  }
+
+  function renderSelection() {
+    items.forEach(function (i) { i.dom.row.classList.toggle('is-selected', selection.has(i)); });
+    if (panel) panel.ctrl.updateCopy();
+    updateToolbar();
+  }
+
+  // Files that Convert and Copy settings act on.
+  function scope() { return selection.size ? Array.from(selection) : Array.from(items.values()); }
+
+  function copyTargets(source) {
+    var others = Array.from(selection).filter(function (i) { return i !== source; });
+    return others.length ? { scoped: true, list: others } : { scoped: false, list: Array.from(items.values()) };
   }
 
   // Copy the output format (where the file supports it) and, between images, all image
   // settings. keepSize leaves each image's own resize settings alone. Returns how many changed.
   function applyToAll(source, keepSize) {
     var count = 0;
-    items.forEach(function (item) {
+    copyTargets(source).list.forEach(function (item) {
       if (item === source || item.permanent) return;
       var touched = false;
       if (source.kind === 'image' && item.kind === 'image') {
@@ -435,8 +640,45 @@ QC.define('app', function (QC) {
     return e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') !== -1;
   }
 
+  function isEditable(t) {
+    return !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+  }
+
+  // Screenshots arrive as "image.png"; give them a name you can tell apart.
+  function namePasted(file) {
+    if (file.name && !/^image\.\w+$/i.test(file.name)) return file;
+    var d = new Date(), two = function (n) { return (n < 10 ? '0' : '') + n; };
+    var ext = ((file.type.split('/')[1] || 'png').replace('jpeg', 'jpg'));
+    return new File([file], 'Pasted image ' + two(d.getHours()) + '-' + two(d.getMinutes()) + '-' + two(d.getSeconds()) + '.' + ext,
+      { type: file.type, lastModified: file.lastModified });
+  }
+
   function wireInput() {
     el.drop.addEventListener('click', function () { el.input.click(); });
+
+    // Ctrl+V adds pasted files (screenshots, files copied in the file manager).
+    // Pasting into a text field still pastes text there.
+    window.addEventListener('paste', function (e) {
+      if (isEditable(e.target)) return;
+      var files = Array.prototype.slice.call((e.clipboardData && e.clipboardData.files) || []);
+      if (!files.length) return;
+      e.preventDefault();
+      addFiles(files.map(namePasted));
+    });
+
+    // Esc deselects everything (and hides the settings), Ctrl+A selects every file (outside
+    // text fields). Listens on window so the full-screen view and the copy question claim Esc first.
+    window.addEventListener('keydown', function (e) {
+      if (e.defaultPrevented || isEditable(e.target)) return;
+      if (e.key === 'Escape' && (selection.size || (panel && wide.matches))) {
+        clearSelection();
+        retract();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && items.size) {
+        e.preventDefault();
+        items.forEach(function (i) { if (!i.permanent) selection.add(i); });
+        renderSelection();
+      }
+    });
     el.input.addEventListener('change', function () {
       addFiles(el.input.files);
       el.input.value = ''; // allow picking the same file again
@@ -475,8 +717,7 @@ QC.define('app', function (QC) {
       list: document.getElementById('files'), actions: document.getElementById('actions'),
       summary: document.getElementById('summary'), convert: document.getElementById('convert-all'),
       zip: document.getElementById('zip-all'), clear: document.getElementById('clear-all'),
-      banner: document.getElementById('banner'), sideInner: document.querySelector('#side .side-inner'),
-      sideEmpty: document.getElementById('side-empty')
+      banner: document.getElementById('banner'), sideInner: document.querySelector('#side .side-inner')
     };
     QC.theme.init();
     detectCaps();
@@ -486,7 +727,6 @@ QC.define('app', function (QC) {
       el.banner.hidden = false;
     }
     wireInput();
-    updateSide();
     el.convert.addEventListener('click', convertAll);
     el.zip.addEventListener('click', downloadZip);
     el.clear.addEventListener('click', clearAll);

@@ -37,8 +37,14 @@ QC.define('theme', function (QC) {
     }
   }
 
+  // A short colour cross-fade while switching (see html.theme-anim in style.css).
+  var fadeTimer = null;
   function toggle() {
     var next = current() === 'dark' ? 'light' : 'dark';
+    var root = document.documentElement;
+    root.classList.add('theme-anim');
+    clearTimeout(fadeTimer);
+    fadeTimer = setTimeout(function () { root.classList.remove('theme-anim'); }, 400);
     store(next === system() ? null : next);
     apply();
   }

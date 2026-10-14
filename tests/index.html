@@ -214,6 +214,7 @@
     var c = await QC.data.convert(file([b.blob], 'c.xlsx'), { from: 'xlsx', to: 'csv' }, noop);
     eq([a.rows, b.rows, c.rows], [500, 500, 500]);
     eq(QC.data.parseCSV(await c.blob.text()), QC.data.parseCSV(csv));
+    eq([c.preview.length, c.preview[0][0], c.preview[1][2]], [201, 'id', '0001'], 'preview rows for the page');
   });
 
   /* ---------- report ---------- */
