@@ -1,7 +1,8 @@
 /*
- * Advanced panel for one image: quality, target size, resize, resampling, live preview.
+ * Settings panel for one file. Every file gets the output format and "copy to all";
+ * images also get quality, file size, resize, resampling and a live preview.
  *
- * Preview runs in two steps, debounced 400 ms after each change:
+ * Image preview runs in two steps, debounced 400 ms after each change:
  *   1. fast:  render from a <=1200 px copy, estimate the output size from the pixel ratio
  *   2. exact: full-resolution conversion. Its result is cached on the item, so pressing
  *             Convert afterwards with the same settings is instant.
@@ -10,52 +11,99 @@ QC.define('panel', function (QC) {
   'use strict';
 
   var DEBOUNCE = 400;
+  var COPY_LABEL = 'Copy settings to all files';
 
-  // ctx: { onChange(item), onApplyAll(item), settingsKey(item), jobOptions(item), formatBytes(n), percentChange(a, b) }
+  /*
+   * ctx: { onChange(item), onTarget(item), onApplyAll(item, keepSize) -> count, outputs(item),
+   *        settingsKey(item), jobOptions(item), formatBytes(n), percentChange(a, b) }
+   * host: the file's row (phones) or the side column (wide screens). mount() moves the panel.
+   */
   function open(item, host, ctx) {
     var root = document.getElementById('tpl-panel').content.firstElementChild.cloneNode(true);
     host.appendChild(root);
+    var isImage = item.kind === 'image';
     var $ = function (sel) { return root.querySelector(sel); };
     var el = {
+      name: $('.panel-name'), sub: $('.panel-sub'),
+      copy: $('.copy-all'), reset: $('.reset'), warn: $('.copy-warn'), warnText: $('.copy-warn-text'),
+      body: $('.panel-body'), settings: $('.panel-settings'), previewCol: $('.panel-preview'),
+      target: $('.p-target'), dataNote: $('.data-note'),
       qField: $('[data-show="quality"]'), qRange: $('.q-range'), qValue: $('.q-value'), qFound: $('.q-found'),
-      tField: $('[data-show="target"]'), tOn: $('.t-on'), tInputs: $('.t-inputs'), tValue: $('.t-value'), tUnit: $('.t-unit'), tNote: $('.t-note'),
+      tField: $('[data-show="target"]'), tModes: root.querySelectorAll('.t-mode'), tInputs: $('.t-inputs'),
+      tValue: $('.t-value'), tUnit: $('.t-unit'), tNote: $('.t-note'),
       modes: root.querySelectorAll('.r-mode'), rPercent: $('.r-percent'), rPct: $('.r-pct'),
       rPixels: $('.r-pixels'), rW: $('.r-w'), rH: $('.r-h'), rLock: $('.r-lock'), rInfo: $('.r-info'),
-      rs: $('.rs'), stats: $('.preview-stats'), applyAll: $('.apply-all'), reset: $('.reset')
+      rs: $('.rs'), stats: $('.preview-stats')
     };
+    el.name.textContent = item.file.name;
+    el.name.title = item.file.name;
+    el.dataNote.hidden = isImage;
+    if (!isImage) root.querySelectorAll('[data-image]').forEach(function (n) { n.hidden = true; });
     el.modes.forEach(function (r) { r.name = 'resize-' + item.id; });
+    el.tModes.forEach(function (r) { r.name = 'size-' + item.id; });
+    ctx.outputs(item).forEach(function (o) {
+      var opt = document.createElement('option');
+      opt.value = o;
+      opt.textContent = QC.formats.get(o).label;
+      el.target.appendChild(opt);
+    });
 
-    var compare = QC.preview.create($('.preview-host'));
+    var compare = isImage ? QC.preview.create($('.preview-host'), { maxHeight: previewMaxHeight, controls: $('.zoom-slot') }) : null;
     var timer = null, generation = 0, closed = false;
     var fast = null, exact = null, exactBusy = false, exactProgress = 0, previewError = '';
     var s = item.settings;
+
+    // Keep the whole panel on screen in the side column (sized for the unscrolled page): the
+    // picture gets the height the rest leaves. Below the file on phones: a share of the screen.
+    function previewMaxHeight() {
+      var portrait = root.classList.contains('is-portrait');
+      var side = root.closest('.col-side');
+      if (!side) return window.innerHeight * (portrait ? 0.7 : 0.6);
+      var avail = window.innerHeight - (side.getBoundingClientRect().top + window.scrollY) - 16;
+      var box = root.querySelector('.compare');
+      var boxH = box ? box.offsetHeight : 0;
+      var chrome = root.offsetHeight - el.body.offsetHeight;          // name, copy bar, padding
+      var extra = el.previewCol.offsetHeight - boxH;                  // stats and zoom buttons
+      var bodyStyle = getComputedStyle(el.body);
+      var sideBySide = bodyStyle.gridTemplateColumns.split(' ').length > 1;
+      if (sideBySide) {
+        // On short screens the settings column is the taller one; use its height too.
+        return Math.max(avail - chrome - extra, el.settings.offsetHeight - extra);
+      }
+      return avail - chrome - extra - el.settings.offsetHeight - (parseFloat(bodyStyle.rowGap) || 0);
+    }
 
     /* ----- fields <-> settings ----- */
 
     function lossy() { return !!QC.image.LOSSY[item.target]; }
 
     function fill() {
-      el.qRange.value = s.quality;
-      el.tOn.checked = s.targetOn;
-      el.tValue.value = s.targetValue;
-      el.tUnit.value = s.targetUnit;
-      el.modes.forEach(function (r) { r.checked = r.value === s.resizeMode; });
-      el.rPct.value = s.percent;
-      el.rW.value = s.width;
-      el.rH.value = s.height;
-      el.rs.value = s.resample;
+      el.target.value = item.target;
+      if (isImage) {
+        el.qRange.value = s.quality;
+        el.tModes.forEach(function (r) { r.checked = r.value === (s.targetOn ? 'target' : 'auto'); });
+        el.tValue.value = s.targetValue;
+        el.tUnit.value = s.targetUnit;
+        el.modes.forEach(function (r) { r.checked = r.value === s.resizeMode; });
+        el.rPct.value = s.percent;
+        el.rW.value = s.width;
+        el.rH.value = s.height;
+        el.rs.value = s.resample;
+      }
       sync();
     }
 
     // Visibility and derived values. Call after any change.
     function sync() {
+      el.sub.textContent = (item.type || '').toUpperCase() + ' → ' + (item.target || '').toUpperCase() +
+        ' · ' + ctx.formatBytes(item.file.size);
+      if (!isImage) return;
       var ico = item.target === 'ico';
       el.qField.hidden = !lossy();
       el.tField.hidden = ico;
-      var targetActive = s.targetOn && !ico;
       el.tInputs.hidden = !s.targetOn;
-      el.qRange.disabled = targetActive && lossy();
-      el.qValue.textContent = el.qRange.disabled ? 'auto' : s.quality;
+      el.qRange.disabled = s.targetOn && !ico && lossy();
+      el.qValue.textContent = el.qRange.disabled ? 'set by target' : s.quality;
       el.rPercent.hidden = s.resizeMode !== 'percent';
       el.rPixels.hidden = s.resizeMode !== 'pixels';
       el.rLock.setAttribute('aria-pressed', String(!!s.lockAspect));
@@ -70,9 +118,12 @@ QC.define('panel', function (QC) {
         el.rInfo.textContent = 'Original ' + d.width + ' × ' + d.height +
           (out.width !== d.width || out.height !== d.height ? '  →  ' + out.width + ' × ' + out.height : '') +
           (ico ? ' (ICO: fitted into ' + Math.min(256, Math.max(out.width, out.height)) + ' px square)' : '');
+        // Below a file (phones), tall pictures may use more of the screen height.
+        root.classList.toggle('is-portrait', out.height > out.width * 1.1);
       }
       renderTargetNotes();
       renderStats();
+      compare.layout(); // the panel's height may have changed
     }
 
     function renderTargetNotes() {
@@ -131,12 +182,24 @@ QC.define('panel', function (QC) {
 
     /* ----- events ----- */
 
+    el.target.addEventListener('change', function () {
+      item.target = el.target.value;
+      ctx.onTarget(item);
+      refresh();
+    });
+
     el.qRange.addEventListener('input', function () {
       s.quality = parseInt(el.qRange.value, 10);
-      el.qValue.textContent = s.quality;
       changed();
     });
-    el.tOn.addEventListener('change', function () { s.targetOn = el.tOn.checked; if (s.targetOn) el.tValue.focus(); changed(); });
+    el.tModes.forEach(function (r) {
+      r.addEventListener('change', function () {
+        if (!r.checked) return;
+        s.targetOn = r.value === 'target';
+        if (s.targetOn) el.tValue.focus();
+        changed();
+      });
+    });
     el.tValue.addEventListener('input', function () { s.targetValue = el.tValue.value; changed(); });
     el.tUnit.addEventListener('change', function () { s.targetUnit = el.tUnit.value; changed(); });
     el.rs.addEventListener('change', function () { s.resample = el.rs.value; changed(); });
@@ -178,7 +241,6 @@ QC.define('panel', function (QC) {
       changed();
     });
 
-    el.applyAll.addEventListener('click', function () { ctx.onApplyAll(item); });
     el.reset.addEventListener('click', function () {
       var fresh = QC.image.defaults();
       Object.keys(fresh).forEach(function (k) { s[k] = fresh[k]; });
@@ -188,14 +250,36 @@ QC.define('panel', function (QC) {
       schedule();
     });
 
+    /* ----- copy to all files ----- */
+
+    function copy(keepSize) {
+      el.warn.hidden = true;
+      var n = ctx.onApplyAll(item, keepSize);
+      el.copy.textContent = n ? 'Copied to ' + n + (n === 1 ? ' file' : ' files') : 'No other files to copy to';
+      setTimeout(function () { el.copy.textContent = COPY_LABEL; }, 1800);
+    }
+
+    // An exact pixel size only fits this picture; ask before stretching the others.
+    el.copy.addEventListener('click', function () {
+      if (!isImage || s.resizeMode !== 'pixels') { copy(false); return; }
+      var out = item.dims ? QC.image.computeSize(item.dims.width, item.dims.height, s) : { width: s.width, height: s.height };
+      el.warnText.textContent = 'This image is resized to exactly ' + out.width + ' × ' + out.height + ' px. ' +
+        'Other images have their own sizes, so copying that size can stretch or blur them.';
+      el.warn.hidden = false;
+    });
+    $('.copy-cancel').addEventListener('click', function () { el.warn.hidden = true; el.copy.focus(); });
+    $('.copy-except').addEventListener('click', function () { copy(true); });
+    $('.copy-everything').addEventListener('click', function () { copy(false); });
+
     /* ----- preview pipeline ----- */
 
     function schedule(now) {
+      if (!isImage) return;
       clearTimeout(timer);
       timer = setTimeout(runPreview, now ? 0 : DEBOUNCE);
     }
 
-    function ignorable(e) { return e && (e.code === 'cancelled'); }
+    function ignorable(e) { return e && e.code === 'cancelled'; }
 
     function runFast(gen, override) {
       return QC.pool.run({
@@ -271,17 +355,21 @@ QC.define('panel', function (QC) {
       closed = true;
       clearTimeout(timer);
       QC.pool.cancel(function (j) { return j.owner === item.id && /^(prepare|preview|exact):/.test(j.key || ''); });
-      compare.destroy();
+      if (compare) compare.destroy();
       if (item.previewSource) { item.previewSource.close(); item.previewSource = null; }
       root.remove();
     }
 
-    // Called by the app when the target format changes while the panel is open.
+    // Called by the app when the format or settings change from outside the panel.
     function refresh() { stale(); fill(); schedule(); }
 
+    function mount(newHost) {
+      if (root.parentNode !== newHost) newHost.appendChild(root);
+    }
+
     fill();
-    prepare();
-    return { close: close, refresh: refresh };
+    if (isImage) prepare();
+    return { close: close, refresh: refresh, mount: mount, root: root };
   }
 
   return { open: open };

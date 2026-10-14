@@ -5,7 +5,10 @@ A small file converter that runs entirely in the browser. Files never leave your
 - **Images:** JPG, PNG, WebP, GIF (first frame), BMP, ICO → JPG, PNG, WebP, BMP, ICO
 - **Data:** CSV ↔ JSON ↔ XLSX, TXT → HTML, Markdown → HTML or TXT
 - Batch conversion, "Download all" as a ZIP
-- Per-image settings: quality, target file size, resize (percent or pixels), resampling, live before/after preview with a pixel zoom lens
+- Per-image settings: output format, quality, file size (auto or a target), resize (percent or pixels), resampling
+- Live before/after preview: drag the divider, scroll to zoom, drag to move, pinch on touch screens, full-screen view
+- "Copy settings to all files", with a warning before copying an exact pixel size to other images
+- Wide screens: file list on the left; the selected file's settings on the right (click a file name to switch). Phones: settings open under the file.
 
 Plain HTML, CSS and JavaScript. No framework, no build step, no `npm install`.
 
@@ -46,8 +49,8 @@ js/convert/data.js      CSV parser/writer, JSON tables, XLSX (SheetJS), Markdown
 js/convert/bmp.js       hand-written 24-bit BMP encoder
 js/convert/ico.js       ICO writer (PNG inside ICO)
 js/convert/zip.js       minimal ZIP writer (stored, no compression)
-js/ui/panel.js          advanced settings panel and the two-step live preview
-js/ui/preview.js        before/after slider and zoom lens
+js/ui/panel.js          settings panel (any file) and the two-step live image preview
+js/ui/preview.js        before/after canvas: divider, zoom and pan, full-screen view
 js/ui/theme.js          light/dark toggle (follows the system by default)
 tests/index.html        in-browser unit and end-to-end tests
 tests/fixtures.js       generates test images, GIFs, CSVs and so on
