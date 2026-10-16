@@ -2,6 +2,7 @@
  * Minimal ZIP writer (store only, no compression). Converted images are already
  * compressed, so deflate would add code and time for almost no gain.
  * Limits: 65,535 files and 4 GB total (no Zip64).
+ * Also a small reader for Office files (DOCX), unpacked with the browser's DecompressionStream.
  */
 QC.define('zip', function (QC) {
   'use strict';
@@ -98,5 +99,47 @@ QC.define('zip', function (QC) {
     return new Blob(parts.concat(central, [end.buffer]), { type: 'application/zip' });
   }
 
-  return { build: build, crc32: crc32, uniqueNames: uniqueNames };
+  /* ---------- reading ---------- */
+
+  async function inflate(bytes) {
+    if (typeof DecompressionStream === 'undefined') throw QC.error('unsupported', 'This browser can\'t unpack this file. Try a newer browser.');
+    var stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  // buffer -> { names, has(name), bytes(name) -> Promise<Uint8Array>, text(name) -> Promise<string> }
+  function read(buffer) {
+    var b = new Uint8Array(buffer), dv = new DataView(b.buffer, b.byteOffset, b.byteLength), end = -1;
+    for (var i = b.length - 22; i >= Math.max(0, b.length - 65557); i--) {
+      if (dv.getUint32(i, true) === 0x06054b50) { end = i; break; }
+    }
+    if (end < 0) throw QC.error('decode', 'Not a valid file (no ZIP directory).');
+    var count = dv.getUint16(end + 10, true), at = dv.getUint32(end + 16, true), dec = new TextDecoder();
+    var entries = Object.create(null), names = [];
+    for (var k = 0; k < count && at + 46 <= b.length; k++) {
+      if (dv.getUint32(at, true) !== 0x02014b50) break;
+      var nameLen = dv.getUint16(at + 28, true), extra = dv.getUint16(at + 30, true), comment = dv.getUint16(at + 32, true);
+      var name = dec.decode(b.subarray(at + 46, at + 46 + nameLen));
+      entries[name] = { method: dv.getUint16(at + 10, true), size: dv.getUint32(at + 20, true), offset: dv.getUint32(at + 42, true) };
+      names.push(name);
+      at += 46 + nameLen + extra + comment;
+    }
+    async function bytes(name) {
+      var e = entries[name];
+      if (!e) return null;
+      var o = e.offset, start = o + 30 + dv.getUint16(o + 26, true) + dv.getUint16(o + 28, true);
+      var data = b.subarray(start, start + e.size);
+      if (e.method === 0) return data;
+      if (e.method === 8) return inflate(data);
+      throw QC.error('decode', 'Unsupported compression in this file.');
+    }
+    return {
+      names: names,
+      has: function (name) { return !!entries[name]; },
+      bytes: bytes,
+      text: async function (name) { var d = await bytes(name); return d ? new TextDecoder().decode(d) : null; }
+    };
+  }
+
+  return { build: build, crc32: crc32, uniqueNames: uniqueNames, read: read };
 }, { worker: true });

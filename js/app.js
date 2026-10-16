@@ -10,8 +10,9 @@ QC.define('app', function (QC) {
   var items = new Map();
   var seq = 0;
   var panel = null;          // { item, ctrl } for the one open advanced panel
+  var wide = window.matchMedia('(min-width: 1024px)'); // must match the breakpoint in style.css
   var zipUrl = null;
-  var caps = { offscreen: false, webp: false };
+  var caps = { offscreen: false, webp: false, video: false };
   var el = {};
 
   /* ---------- helpers ---------- */
@@ -47,16 +48,41 @@ QC.define('app', function (QC) {
     return e;
   }
 
+  var M = QC.motion; // animation helpers (js/ui/motion.js)
+
   var ICON = {
     check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
     alert: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/></svg>',
-    download: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>'
+    download: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>',
+    history: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.3-5.7M4 4v4h4"/><path d="M12 8v4l3 2"/></svg>'
   };
 
-  function settingsKey(item) { return JSON.stringify([item.target, item.kind === 'image' ? item.settings : null]); }
+  // Same key = same output, so a cached result can be reused.
+  function settingsKey(item) {
+    var h = QC.formats.handler(item.type, item.target);
+    return JSON.stringify([item.target, h === 'image' ? item.settings : h === 'media' ? [item.video, item.settings.background]
+      : [item.editVersion, item.page, item.doc]]);
+  }
 
+  // Edited text is saved as UTF-8, whatever the original file's encoding was.
   function jobOptions(item) {
-    return { from: item.type, to: item.target, settings: Object.assign({}, item.settings) };
+    return { from: item.type, to: item.target, settings: Object.assign({}, item.settings), page: Object.assign({}, item.page),
+      doc: Object.assign({}, item.doc, item.editedText != null ? { encoding: 'utf-8' } : {}), video: Object.assign({}, item.video) };
+  }
+
+  // The file to convert: the original, or the user's edited text.
+  function sourceFile(item) {
+    return item.editedText != null ? new File([item.editedText], item.file.name, { type: item.file.type }) : item.file;
+  }
+
+  // "photo.png" -> "photo.jpg", or the name typed in "Save as".
+  function nameFor(item, ext) {
+    return item.outBase ? item.outBase + '.' + ext : QC.formats.outputName(item.file.name, ext);
+  }
+
+  function metaText(item) {
+    var f = QC.formats.get(item.type);
+    return formatBytes(item.file.size) + ' · ' + (f ? f.desc : 'Unknown type') + (item.editedText != null ? ' · edited' : '');
   }
 
   function detectCaps() {
@@ -66,6 +92,7 @@ QC.define('app', function (QC) {
       c.width = c.height = 1;
       caps.webp = c.toDataURL('image/webp').indexOf('data:image/webp') === 0;
     } catch (e) { caps.webp = false; }
+    caps.video = QC.video.supported();
   }
 
   /* ---------- items ---------- */
@@ -87,10 +114,15 @@ QC.define('app', function (QC) {
       target: f ? QC.formats.defaultOutput(f.key, caps) : null,
       settings: QC.image.defaults(), dims: null, previewSource: null,
       status: 'idle', progress: 0, error: '', permanent: false, run: 0,
-      result: null, pending: null, cache: null
+      result: null, outdated: false, pending: null, cache: null,
+      outBase: null, editedText: null, editVersion: 0,
+      page: { background: '#ffffff', font: 'system', weights: false },  // HTML output style
+      doc: QC.data.defaults(), meta: null,                               // data/document settings; sheets and tables found
+      video: QC.video.defaults()                                         // trim, size, frame rate, quality, volume
     };
     if (!f) fail(item, 'Unsupported format.', true);
     else if (f.kind === 'image' && !caps.offscreen) fail(item, 'Images need a newer browser (no OffscreenCanvas).', true);
+    else if ((f.kind === 'video' || f.kind === 'audio') && !caps.video) fail(item, 'Video and audio need a newer browser: Chrome, Edge, Firefox 130+ or Safari 16.4+.', true);
     buildRow(item, f);
     return item;
   }
@@ -98,17 +130,32 @@ QC.define('app', function (QC) {
   function buildRow(item, f) {
     var row = document.getElementById('tpl-row').content.firstElementChild.cloneNode(true);
     var q = function (s) { return row.querySelector(s); };
-    item.dom = { row: row, target: q('.file-target'), gear: q('.file-gear'), status: q('.file-status'), panel: q('.file-panel') };
+    item.dom = { row: row, target: q('.file-target'), gear: q('.file-gear'), status: q('.file-status'),
+      panel: q('.file-panel'), meta: q('.file-meta') };
 
     q('.file-name').textContent = item.file.name;
     q('.file-name').title = item.file.name;
-    q('.file-meta').textContent = formatBytes(item.file.size) + ' · ' + (f ? f.desc : 'Unknown type');
+    item.dom.meta.textContent = metaText(item);
+    // Clicking anywhere on the file (except its controls and open settings) works like its name.
+    function clicked(e) {
+      if (heldItem === item) { heldItem = null; return; }   // the finger lifting after a hold
+      onFileClick(item, e);
+    }
+    q('.file-name').addEventListener('click', clicked);
+    row.addEventListener('click', function (e) {
+      if (e.target.closest('button, a, select, input, textarea, label, iframe, .file-panel')) return;
+      clicked(e);
+    });
+    wireHold(row, item);
     if (item.file.size > LARGE_FILE) q('.file-warn').hidden = false;
 
     var select = item.dom.target;
-    var outs = f ? QC.formats.outputsFor(f.key, caps) : [];
-    outs.forEach(function (o) { select.appendChild(h('option', { value: o, text: QC.formats.get(o).label })); });
-    if (!outs.length) select.appendChild(h('option', { text: '—' }));
+    var groups = f ? QC.formats.groupsFor(f.key, caps) : [];
+    groups.forEach(function (g) {                    // Tables / Data / Documents
+      var parent = g.label ? select.appendChild(h('optgroup', { label: g.label })) : select;
+      g.keys.forEach(function (o) { parent.appendChild(h('option', { value: o, text: QC.formats.get(o).label })); });
+    });
+    if (!groups.length) select.appendChild(h('option', { text: '—' }));
     select.value = item.target || '';
     select.disabled = item.permanent;
     select.addEventListener('change', function () {
@@ -117,8 +164,9 @@ QC.define('app', function (QC) {
       if (panel && panel.item === item) panel.ctrl.refresh();
     });
 
-    item.dom.gear.hidden = item.kind !== 'image' || item.permanent;
-    item.dom.gear.addEventListener('click', function () { togglePanel(item); });
+    // Unsupported file: keep the gear's space so the format menus line up.
+    if (item.permanent) item.dom.gear.style.visibility = 'hidden';
+    item.dom.gear.addEventListener('click', function () { pick(item); });
     q('.file-remove').addEventListener('click', function () { removeItem(item); });
   }
 
@@ -131,36 +179,45 @@ QC.define('app', function (QC) {
   function dropResult(item) {
     if (item.result) URL.revokeObjectURL(item.result.url);
     item.result = null;
+    item.outdated = false;
     item.pending = null;
   }
 
-  // Settings or format changed: any finished result is now stale.
+  // Settings, text or format changed. A finished result stays downloadable, marked as outdated,
+  // until the file is converted again.
   function invalidate(item) {
     if (item.permanent) return;
     item.run++; // results of jobs already running for this item will be ignored
     QC.pool.cancel(function (j) { return j.owner === item.id && j.task === 'convert' && !j.key; });
-    if (item.status !== 'idle') {
-      dropResult(item);
-      item.status = 'idle';
-      item.error = '';
-      render(item);
-    }
+    item.dom.meta.textContent = metaText(item);
+    var changed = item.status !== 'idle' || (item.result && !item.outdated);
+    item.pending = null;
+    item.status = 'idle';
+    item.error = '';
+    if (item.result) item.outdated = true;
+    if (changed) render(item);
     updateToolbar();
   }
 
   function removeItem(item) {
-    if (panel && panel.item === item) closePanel();
+    if (panel && panel.item === item) closePanel(true);
     item.run++;
     QC.pool.cancel(function (j) { return j.owner === item.id; });
     dropResult(item);
     item.cache = null;
+    selection.delete(item);
+    if (anchor === item) anchor = null;
     items.delete(item.id);
-    item.dom.row.remove();
+    M.foldAway(item.dom.row);
     updateToolbar();
+    updateSide();
   }
 
   function clearAll() {
-    Array.from(items.values()).forEach(removeItem);
+    var all = Array.from(items.values());
+    closePanel(true);
+    all.forEach(removeItem);
+    updateSide();
   }
 
   /* ---------- rendering ---------- */
@@ -170,6 +227,15 @@ QC.define('app', function (QC) {
     box.className = 'file-status is-' + item.status;
     box.textContent = '';
     switch (item.status) {
+      case 'idle':
+        if (!item.result) break;
+        box.classList.add('is-outdated');
+        box.appendChild(h('span', { class: 'status-icon', html: ICON.history }));
+        box.appendChild(h('span', { class: 'status-text', text: 'Settings changed. Previous result: ' +
+          formatBytes(item.result.blob.size) + '. Convert again to update.' }));
+        box.appendChild(h('a', { class: 'btn btn-small btn-outdated', href: item.result.url, download: item.result.name,
+          title: 'Previous result: ' + item.result.name }, [h('span', { class: 'btn-icon', html: ICON.download }), 'Download old']));
+        break;
       case 'queued':
         box.appendChild(h('span', { class: 'muted', text: 'Queued' }));
         break;
@@ -217,7 +283,9 @@ QC.define('app', function (QC) {
   function doneText(item) {
     var r = item.result.info, size = item.result.blob.size;
     var parts = [formatBytes(size) + ' (' + percentChange(item.file.size, size) + ')'];
-    if (item.kind === 'image') {
+    if (r.duration) {
+      parts.push(Math.floor(r.duration / 60) + ':' + ('0' + (r.duration % 60).toFixed(1)).slice(-4));
+    } else if (item.kind === 'image') {
       parts.push(r.width + ' × ' + r.height);
       if (r.quality && item.settings.targetOn && QC.image.targetBytes(item.settings)) parts.push('quality ' + r.quality);
     } else if (typeof r.rows === 'number') {
@@ -229,17 +297,29 @@ QC.define('app', function (QC) {
 
   function updateToolbar() {
     var list = Array.from(items.values());
-    el.toolbar.hidden = !list.length;
+    el.summary.hidden = el.actions.hidden = !list.length;
     el.drop.classList.toggle('is-compact', list.length > 0);
     var total = list.reduce(function (n, i) { return n + i.file.size; }, 0);
-    el.summary.textContent = list.length + (list.length === 1 ? ' file · ' : ' files · ') + formatBytes(total);
-    var todo = list.filter(canConvert).length;
+    el.summary.textContent = '';
+    if (selection.size) {
+      el.summary.appendChild(document.createTextNode(selection.size + ' of ' + list.length + ' selected · '));
+      el.summary.appendChild(h('button', { type: 'button', class: 'link-btn', text: 'Clear selection', onclick: clearSelection }));
+    } else {
+      el.summary.textContent = list.length + (list.length === 1 ? ' file · ' : ' files · ') + formatBytes(total);
+    }
+    var todo = scope().filter(canConvert).length;
     var busy = list.some(function (i) { return i.status === 'queued' || i.status === 'converting'; });
+    var label = selection.size > 1 ? 'Convert ' + selection.size + ' files'
+      : selection.size === 1 || list.length === 1 ? 'Convert file' : 'Convert all files';
     el.convert.disabled = !todo;
-    el.convert.textContent = busy && !todo ? 'Converting…' : todo > 1 ? 'Convert ' + todo + ' files' : 'Convert';
-    var done = list.filter(function (i) { return i.status === 'done'; }).length;
-    el.zip.hidden = done < 2;
+    el.convert.textContent = busy && !todo ? 'Converting…' : label;
+    var zipCount = zipItems().length;
+    el.zip.hidden = zipCount < 2;
+    if (!el.zip.disabled) el.zip.textContent = selection.size ? 'Download ' + zipCount + ' selected (ZIP)' : 'Download all (ZIP)';
   }
+
+  // Converted files the ZIP holds: the selected ones, or all when none are selected.
+  function zipItems() { return scope().filter(function (i) { return i.status === 'done'; }); }
 
   function canConvert(item) {
     return !item.permanent && (item.status === 'idle' || item.status === 'failed');
@@ -247,15 +327,16 @@ QC.define('app', function (QC) {
 
   /* ---------- conversion ---------- */
 
+  // Converts the selected files, or all files when none are selected.
   function convertAll() {
-    items.forEach(function (item) { if (canConvert(item)) convertItem(item); });
+    scope().forEach(function (item) { if (canConvert(item)) convertItem(item); });
     updateToolbar();
   }
 
   function convertItem(item) {
     var run = ++item.run;
     var key = settingsKey(item);
-    dropResult(item);
+    item.pending = null;
     if (item.cache && item.cache.key === key) { finish(item, item.cache.result); return; }
 
     item.status = 'queued';
@@ -263,7 +344,7 @@ QC.define('app', function (QC) {
     item.error = '';
     render(item);
     var job = {
-      task: 'convert', owner: item.id, file: item.file, options: jobOptions(item),
+      task: 'convert', owner: item.id, file: sourceFile(item), options: jobOptions(item),
       onProgress: function (p) {
         if (run !== item.run) return;
         item.progress = p;
@@ -271,9 +352,11 @@ QC.define('app', function (QC) {
         else renderProgress(item);
       }
     };
-    (item.kind === 'image' ? QC.pool.runImage(job) : QC.pool.run(job)).then(function (r) {
+    var h = QC.formats.handler(item.type, item.target);
+    job.stoppable = h === 'media';                     // minutes long: stopped if the file changes or goes
+    (h === 'image' ? QC.pool.runImage(job) : QC.pool.run(job)).then(function (r) {
       if (run !== item.run || !items.has(item.id)) return;
-      if (item.kind === 'image') item.cache = { key: key, result: r };
+      item.cache = { key: key, result: r };
       finish(item, r);
     }, function (err) {
       if (run !== item.run || !items.has(item.id)) return;
@@ -286,7 +369,6 @@ QC.define('app', function (QC) {
 
   function finish(item, r) {
     if (r.unreachable) {
-      dropResult(item);
       item.status = 'attention';
       item.pending = r;
     } else {
@@ -294,18 +376,18 @@ QC.define('app', function (QC) {
     }
     render(item);
     updateToolbar();
+    if (panel && panel.item === item) panel.ctrl.result();
   }
 
   function setResult(item, r) {
     dropResult(item);
-    item.result = { blob: r.blob, url: URL.createObjectURL(r.blob), name: QC.formats.outputName(item.file.name, item.target), info: r };
+    item.result = { blob: r.blob, url: URL.createObjectURL(r.blob), ext: item.target, name: nameFor(item, item.target), info: r };
     item.status = 'done';
   }
 
   function downloadZip() {
-    var done = Array.from(items.values()).filter(function (i) { return i.status === 'done'; });
+    var done = zipItems();
     if (done.length < 2) return;
-    var label = el.zip.textContent;
     el.zip.disabled = true;
     el.zip.textContent = 'Building ZIP…';
     QC.pool.run({
@@ -323,65 +405,267 @@ QC.define('app', function (QC) {
       window.alert('Could not build the ZIP: ' + (err.message || 'unknown error'));
     }).then(function () {
       el.zip.disabled = false;
-      el.zip.textContent = label;
+      updateToolbar();
     });
   }
 
-  /* ---------- advanced panel ---------- */
+  /* ---------- settings panel ---------- */
+
+  // Wide screens: a clicked file's panel is in a side column, which can be hidden (×).
+  // Settings only open when the user clicks a file, never by themselves.
+  // Phones: the panel opens inside the file's row and can be closed again.
+  var RESIZE_KEYS = ['resizeMode', 'percent', 'width', 'height', 'lockAspect', 'lockDriver'];
 
   var panelCtx = {
     onChange: invalidate,
+    onTarget: function (item) {
+      item.dom.target.value = item.target;
+      invalidate(item);
+    },
     onApplyAll: applyToAll,
+    reopen: function (item) { closePanel(true); openPanelFor(item); },
+    onClose: retract,
+    // Renaming changes no content, so a finished result just gets the new name.
+    onRename: function (item) {
+      if (!item.result) return;
+      item.result.name = nameFor(item, item.result.ext);
+      render(item);
+    },
+    copyLabel: function (item) {
+      return copyTargets(item).scoped ? 'Copy settings to selected files' : 'Copy settings to all files';
+    },
+    outputs: function (item) { return QC.formats.outputsFor(item.type, caps); },
+    groups: function (item) { return QC.formats.groupsFor(item.type, caps); },
+    outputName: function (item) { return nameFor(item, item.target); },
+    sourceFile: sourceFile,
     settingsKey: settingsKey,
     jobOptions: jobOptions,
     formatBytes: formatBytes,
     percentChange: percentChange
   };
 
-  function closePanel() {
+  function panelHost(item) { return wide.matches ? el.sideInner : item.dom.panel; }
+
+  // Two columns only while a panel is shown on a wide screen (see body.show-side in style.css).
+  // Switching between the layouts glides; the side column slides in.
+  function updateSide() {
+    var show = !!panel;
+    if (document.body.classList.contains('show-side') === show) return;
+    M.glide([document.querySelector('.brand'), document.getElementById('theme-toggle'), el.summary, el.actions,
+      document.querySelector('.col-main')], function () { document.body.classList.toggle('show-side', show); });
+    if (show && wide.matches && !M.calm()) {
+      el.sideInner.animate([{ opacity: 0, transform: 'translateX(24px)' }, { opacity: 1, transform: 'none' }], { duration: 240, easing: M.EASE });
+    }
+  }
+
+  // keepSide: another panel opens right away, so don't collapse the layout in between.
+  function closePanel(keepSide) {
     if (!panel) return;
     panel.ctrl.close();
     panel.item.dom.gear.setAttribute('aria-expanded', 'false');
     panel.item.dom.row.classList.remove('is-open');
     panel = null;
+    if (!keepSide) updateSide();
   }
 
-  function togglePanel(item) {
-    if (panel && panel.item === item) { closePanel(); return; }
-    openPanelFor(item);
+  // Hide the settings because the user deselected the file (×, click it again, Esc).
+  // On wide screens the side column slides out first, then the layout glides back.
+  var leaving = null;
+  function retract() {
+    if (!panel) return;
+    if (!wide.matches) { closePanel(); return; }
+    if (M.calm()) { closePanel(); return; }
+    var ctrl = panel.ctrl;
+    panel.item.dom.gear.setAttribute('aria-expanded', 'false');
+    panel.item.dom.row.classList.remove('is-open');
+    panel = null;
+    var anim = el.sideInner.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateX(24px)' }],
+      { duration: 160, easing: 'ease-in', fill: 'forwards' });
+    var l = leaving = { anim: anim, ctrl: ctrl };
+    M.afterAnim(anim, 160, function () { if (leaving === l) { finishLeaving(); updateSide(); } });
+  }
+
+  function finishLeaving() {
+    if (!leaving) return;
+    var l = leaving;
+    leaving = null;
+    l.ctrl.close();
+    l.anim.cancel();
   }
 
   function openPanelFor(item, focusSelector) {
+    if (item.permanent) return;
+    finishLeaving();
     if (!panel || panel.item !== item) {
-      closePanel();
-      panel = { item: item, ctrl: QC.panel.open(item, item.dom.panel, panelCtx) };
+      // Wide screens: the panel for the new file grows or shrinks from the old one, shared
+      // options move into place and the rest fade in or out. Phones: it unfolds in the row.
+      var snap = panel && wide.matches ? M.snapshot(panel.ctrl.root) : null;
+      var picture = panel && wide.matches ? panel.ctrl.picture() : null;
+      closePanel(true);
+      panel = { item: item, ctrl: QC.panel.open(item, panelHost(item), panelCtx, { startPicture: picture }) };
+      if (snap) M.play(snap, panel.ctrl.root);
+      else if (!wide.matches) M.unfold(panel.ctrl.root);
       item.dom.gear.setAttribute('aria-expanded', 'true');
       item.dom.row.classList.add('is-open');
+      updateSide();
     }
     if (focusSelector) {
-      var target = item.dom.panel.querySelector(focusSelector);
-      if (target) { target.focus(); target.select && target.select(); }
+      var target = panel.ctrl.root.querySelector(focusSelector);
+      if (target) { target.focus(); if (target.select) target.select(); }
     }
   }
 
-  // Copy settings (and output format) to every other image in the batch.
-  function applyToAll(source) {
+  // Gear or a plain click on a file. On phones a second click closes the panel again.
+  function pick(item) {
+    if (!wide.matches && panel && panel.item === item) closePanel();
+    else openPanelFor(item);
+  }
+
+  /* ---------- choosing files (Ctrl / Shift click, like a file manager) ---------- */
+
+  // A plain click only shows a file's settings; Convert still means all files.
+  // Ctrl/Cmd-click toggles files and Shift-click selects a range (on touch screens: hold a file,
+  // then tap more): then Convert (and Copy settings) apply to the selected files only.
+  var selection = new Set();
+  var anchor = null;        // last file clicked by the user, where a Shift range starts
+
+  function onFileClick(item, e) {
+    var list = Array.from(items.values());
+    if (touched && e.detail && selection.size && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      toggleChosen(item);                              // touch: while choosing, a tap adds or removes
+      return;
+    }
+    if (e.shiftKey && anchor && items.has(anchor.id)) {
+      var a = list.indexOf(anchor), b = list.indexOf(item);
+      if (!(e.ctrlKey || e.metaKey)) selection.clear();
+      list.slice(Math.min(a, b), Math.max(a, b) + 1).forEach(function (i) { if (!i.permanent) selection.add(i); });
+    } else if (e.ctrlKey || e.metaKey) {
+      // Starting a selection: the file clicked before counts as chosen, like in Explorer.
+      if (!selection.size && anchor && anchor !== item && items.has(anchor.id) && !anchor.permanent) selection.add(anchor);
+      toggleChosen(item);
+      return;
+    } else {
+      var shown = panel && panel.item === item;
+      selection.clear();
+      anchor = item;
+      renderSelection();
+      if (shown && wide.matches) retract();            // clicking the shown file again deselects it
+      else pick(item);
+      return;
+    }
+    renderSelection();
+    if (wide.matches) openPanelFor(item);
+  }
+
+  // Add a file to the chosen ones, or take it out again.
+  function toggleChosen(item) {
+    anchor = item;
+    if (selection.has(item)) {
+      selection.delete(item);
+      renderSelection();
+      if (panel && panel.item === item) retract();     // deselected the file on show
+      return;
+    }
+    if (!item.permanent) selection.add(item);
+    renderSelection();
+    if (wide.matches) openPanelFor(item);
+  }
+
+  // Touch screens have no Ctrl or Shift: holding a file chooses it, and while files are chosen
+  // a tap adds or removes a file instead of showing its settings, like a phone's photo gallery.
+  var HOLD_MS = 450;
+  var HOLD_SKIP = 'button:not(.file-name), a, select, input, textarea, label, iframe, .file-panel';
+  var touched = false;      // the last press on a file was a finger or pen, not a mouse
+  var heldItem = null;      // chosen by the current hold; the click when the finger lifts is ignored
+
+  function wireHold(row, item) {
+    row.addEventListener('pointerdown', function (e) {
+      touched = e.pointerType !== 'mouse';
+      heldItem = null;
+      if (!touched || !e.isPrimary || e.target.closest(HOLD_SKIP)) return;
+      var x = e.clientX, y = e.clientY;
+      var timer = setTimeout(function () {
+        stop();
+        heldItem = item;
+        toggleChosen(item);
+        try { if (navigator.vibrate) navigator.vibrate(10); } catch (err) { /* not allowed */ }
+      }, HOLD_MS);
+      function move(ev) { if (Math.abs(ev.clientX - x) > 10 || Math.abs(ev.clientY - y) > 10) stop(); }
+      function stop() {
+        clearTimeout(timer);
+        row.removeEventListener('pointermove', move);
+        row.removeEventListener('pointerup', stop);
+        row.removeEventListener('pointercancel', stop);   // the finger started scrolling
+      }
+      row.addEventListener('pointermove', move);
+      row.addEventListener('pointerup', stop);
+      row.addEventListener('pointercancel', stop);
+    });
+    // No long-press menu on a file: holding it chooses it.
+    row.addEventListener('contextmenu', function (e) {
+      if (touched && !e.target.closest(HOLD_SKIP)) e.preventDefault();
+    });
+  }
+
+  // Nothing chosen any more; if the file on show was one of them, its settings retract too.
+  function clearSelection() {
+    if (!selection.size) return;
+    var shownWasSelected = panel && selection.has(panel.item);
+    selection.clear();
+    renderSelection();
+    if (shownWasSelected) retract();
+  }
+
+  function renderSelection() {
+    items.forEach(function (i) { i.dom.row.classList.toggle('is-selected', selection.has(i)); });
+    if (panel) panel.ctrl.updateCopy();
+    updateToolbar();
+  }
+
+  // Files that Convert and Copy settings act on.
+  function scope() { return selection.size ? Array.from(selection) : Array.from(items.values()); }
+
+  function copyTargets(source) {
+    var others = Array.from(selection).filter(function (i) { return i !== source; });
+    return others.length ? { scoped: true, list: others } : { scoped: false, list: Array.from(items.values()) };
+  }
+
+  // Copy the output format (where the file supports it) and, between images, all image
+  // settings. keepSize leaves each image's own resize settings alone. Returns how many changed.
+  function applyToAll(source, keepSize) {
     var count = 0;
-    items.forEach(function (item) {
-      if (item === source || item.kind !== 'image' || item.permanent) return;
-      item.settings = JSON.parse(JSON.stringify(source.settings));
-      if (QC.formats.outputsFor(item.type, caps).indexOf(source.target) !== -1) {
+    copyTargets(source).list.forEach(function (item) {
+      if (item === source || item.permanent) return;
+      var touched = false;
+      if (source.kind === 'data' && item.kind === 'data') {
+        // Which sheet or table to read belongs to each file; everything else is copied.
+        var doc = Object.assign({}, source.doc, { sheet: item.doc.sheet, table: item.doc.table });
+        if (JSON.stringify(item.page) !== JSON.stringify(source.page) || JSON.stringify(item.doc) !== JSON.stringify(doc)) {
+          item.page = Object.assign({}, source.page);
+          item.doc = doc;
+          touched = true;
+        }
+      }
+      if (QC.formats.handler(source.type, source.target) === 'media' && QC.formats.handler(item.type, item.target) === 'media') {
+        // Where to trim belongs to each file; everything else is copied.
+        item.video = Object.assign({}, source.video, { start: item.video.start, end: item.video.end });
+        touched = true;
+      }
+      if (source.kind === 'image' && item.kind === 'image') {
+        var own = {}, crop = { crop: item.settings.crop, cropRatio: item.settings.cropRatio };  // a crop fits one picture only
+        RESIZE_KEYS.forEach(function (k) { own[k] = item.settings[k]; });
+        item.settings = Object.assign(JSON.parse(JSON.stringify(source.settings)), crop);
+        if (keepSize) Object.assign(item.settings, own);
+        touched = true;
+      }
+      if (item.target !== source.target && QC.formats.outputsFor(item.type, caps).indexOf(source.target) !== -1) {
         item.target = source.target;
         item.dom.target.value = source.target;
+        touched = true;
       }
-      invalidate(item);
-      count++;
+      if (touched) { invalidate(item); count++; }
     });
-    var btn = source.dom.panel.querySelector('.apply-all');
-    if (btn) {
-      btn.textContent = count ? 'Applied to ' + count + (count === 1 ? ' image' : ' images') : 'No other images';
-      setTimeout(function () { btn.textContent = 'Apply to all images'; }, 1800);
-    }
+    return count;
   }
 
   /* ---------- input ---------- */
@@ -390,8 +674,45 @@ QC.define('app', function (QC) {
     return e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') !== -1;
   }
 
+  function isEditable(t) {
+    return !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+  }
+
+  // Screenshots arrive as "image.png"; give them a name you can tell apart.
+  function namePasted(file) {
+    if (file.name && !/^image\.\w+$/i.test(file.name)) return file;
+    var d = new Date(), two = function (n) { return (n < 10 ? '0' : '') + n; };
+    var ext = ((file.type.split('/')[1] || 'png').replace('jpeg', 'jpg'));
+    return new File([file], 'Pasted image ' + two(d.getHours()) + '-' + two(d.getMinutes()) + '-' + two(d.getSeconds()) + '.' + ext,
+      { type: file.type, lastModified: file.lastModified });
+  }
+
   function wireInput() {
     el.drop.addEventListener('click', function () { el.input.click(); });
+
+    // Ctrl+V adds pasted files (screenshots, files copied in the file manager).
+    // Pasting into a text field still pastes text there.
+    window.addEventListener('paste', function (e) {
+      if (isEditable(e.target)) return;
+      var files = Array.prototype.slice.call((e.clipboardData && e.clipboardData.files) || []);
+      if (!files.length) return;
+      e.preventDefault();
+      addFiles(files.map(namePasted));
+    });
+
+    // Esc deselects everything (and hides the settings), Ctrl+A selects every file (outside
+    // text fields). Listens on window so the full-screen view and the copy question claim Esc first.
+    window.addEventListener('keydown', function (e) {
+      if (e.defaultPrevented || isEditable(e.target)) return;
+      if (e.key === 'Escape' && (selection.size || (panel && wide.matches))) {
+        clearSelection();
+        retract();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && items.size) {
+        e.preventDefault();
+        items.forEach(function (i) { if (!i.permanent) selection.add(i); });
+        renderSelection();
+      }
+    });
     el.input.addEventListener('change', function () {
       addFiles(el.input.files);
       el.input.value = ''; // allow picking the same file again
@@ -427,10 +748,10 @@ QC.define('app', function (QC) {
   function init() {
     el = {
       drop: document.getElementById('drop'), input: document.getElementById('file-input'),
-      list: document.getElementById('files'), toolbar: document.getElementById('toolbar'),
+      list: document.getElementById('files'), actions: document.getElementById('actions'),
       summary: document.getElementById('summary'), convert: document.getElementById('convert-all'),
       zip: document.getElementById('zip-all'), clear: document.getElementById('clear-all'),
-      banner: document.getElementById('banner')
+      banner: document.getElementById('banner'), sideInner: document.querySelector('#side .side-inner')
     };
     QC.theme.init();
     detectCaps();
@@ -443,6 +764,9 @@ QC.define('app', function (QC) {
     el.convert.addEventListener('click', convertAll);
     el.zip.addEventListener('click', downloadZip);
     el.clear.addEventListener('click', clearAll);
+    var onWide = function () { if (panel) panel.ctrl.mount(panelHost(panel.item)); };
+    if (wide.addEventListener) wide.addEventListener('change', onWide);
+    else wide.addListener(onWide);
     window.addEventListener('pagehide', function (e) {
       if (e.persisted) return; // kept in the back/forward cache; links must still work on return
       items.forEach(dropResult);

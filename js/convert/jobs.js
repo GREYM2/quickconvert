@@ -9,18 +9,22 @@ QC.define('jobs', function (QC) {
 
   var tasks = {
     prepare: async function (msg) {
-      var r = await QC.image.prepare(msg.options.bitmap || msg.file);
+      var r = await QC.image.prepare(msg.options.bitmap || msg.file, msg.options.from);
       return { result: r, transfer: [r.bitmap] };
     },
     preview: async function (msg) {
       return { result: await QC.image.preview(msg.options) };
     },
+    probe: async function (msg) {
+      return { result: await QC.video.probe(msg.file) };
+    },
     convert: async function (msg, progress) {
       var o = msg.options, f = QC.formats.get(o.from);
       if (!f) throw QC.error('unsupported', 'Unsupported format.');
       progress(0); // lets the page switch from "queued" to "converting" right away
-      var result = f.kind === 'image'
-        ? await QC.image.convert(o.bitmap || msg.file, o, progress)
+      var h = QC.formats.handler(o.from, o.to);
+      var result = h === 'media' ? await QC.video.convert(msg.file, o, progress)
+        : h === 'image' ? await QC.image.convert(o.bitmap || msg.file, o, progress)
         : await QC.data.convert(msg.file, o, progress);
       return { result: result };
     },
