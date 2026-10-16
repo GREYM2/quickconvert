@@ -165,21 +165,40 @@ QC.define('pool', function (QC) {
     });
   }
 
-  // Drop queued (not running) jobs. Their promises reject with code 'cancelled'.
+  // Drop queued jobs, and stop running ones marked `stoppable` (long video jobs: their worker is
+  // replaced). Their promises reject with code 'cancelled'.
   function cancel(filter) {
     queue = queue.filter(function (j) {
       if (!filter(j)) return true;
       j.reject(QC.error('cancelled', 'Cancelled.'));
       return false;
     });
+    (slots || []).forEach(function (slot, i) {
+      var j = slot.job;
+      if (!j || !j.stoppable || !filter(j)) return;
+      slot.job = null;
+      slot.worker.terminate();
+      slots[i] = new Slot(slot.gen);
+      j.reject(QC.error('cancelled', 'Cancelled.'));
+    });
   }
 
+  // SVG has no pixels of its own: drawn at least 2048 px on the longer side, so it stays sharp
+  // when made smaller (workers can't draw SVG at all, so it always comes here).
   function decodeWithImg(file) {
     return new Promise(function (resolve, reject) {
       var url = URL.createObjectURL(file), img = new Image();
       function fail() { URL.revokeObjectURL(url); reject(QC.error('decode', 'Could not read this image.')); }
       img.onload = function () {
-        createImageBitmap(img).then(function (b) { URL.revokeObjectURL(url); resolve(b); }, fail);
+        var source = img;
+        if (/svg/.test(file.type) || /\.svg$/i.test(file.name)) {
+          var w = img.naturalWidth || 1024, h = img.naturalHeight || w, k = Math.max(1, 2048 / Math.max(w, h));
+          source = document.createElement('canvas');
+          source.width = Math.round(w * k);
+          source.height = Math.round(h * k);
+          source.getContext('2d').drawImage(img, 0, 0, source.width, source.height);
+        }
+        createImageBitmap(source).then(function (b) { URL.revokeObjectURL(url); resolve(b); }, fail);
       };
       img.onerror = fail;
       img.src = url;

@@ -85,7 +85,8 @@ QC.define('motion', function (QC) {
     return g;
   }
 
-  function snapshot(root) {
+  // lazy: the box stays in the page (morph), so ghosts are made only for parts that leave.
+  function snapshot(root, lazy) {
     var base = root.getBoundingClientRect(), parts = {};
     root.querySelectorAll('[data-morph]').forEach(function (n) {
       if (!shown(n)) return;
@@ -94,7 +95,7 @@ QC.define('motion', function (QC) {
         anchor: a === root ? '' : a.dataset.morph,
         x: r.left - ar.left, y: r.top - ar.top,                  // relative to its anchor
         rx: r.left - base.left, ry: r.top - base.top, w: r.width, h: r.height,
-        ghost: ghostOf(n)
+        node: n, ghost: lazy ? null : ghostOf(n)
       };
     });
     return { height: base.height, parts: parts };
@@ -129,7 +130,7 @@ QC.define('motion', function (QC) {
     });
     Object.keys(snap.parts).forEach(function (key) {
       if (seen[key]) return;
-      var o = snap.parts[key], g = o.ghost;
+      var o = snap.parts[key], g = o.ghost || ghostOf(o.node);
       g.removeAttribute('hidden');
       g.style.position = 'absolute';
       g.style.left = o.rx + 'px';
@@ -148,7 +149,7 @@ QC.define('motion', function (QC) {
   // Change a box in place (show/hide parts) with its parts moving instead of popping.
   function morph(root, change) {
     if (calm()) { change(); return; }
-    var snap = snapshot(root);
+    var snap = snapshot(root, true);
     change();
     play(snap, root);
   }

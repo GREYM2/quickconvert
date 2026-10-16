@@ -18,9 +18,15 @@
 <script src="../js/formats.js"></script>
 <script src="../js/convert/zip.js"></script>
 <script src="../js/convert/bmp.js"></script>
+<script src="../js/convert/tiff.js"></script>
+<script src="../js/convert/codecs.js"></script>
 <script src="../js/convert/ico.js"></script>
 <script src="../js/convert/image.js"></script>
+<script src="../js/convert/markup.js"></script>
+<script src="../js/convert/doc.js"></script>
+<script src="../js/convert/docx.js"></script>
 <script src="../js/convert/data.js"></script>
+<script src="../js/convert/video.js"></script>
 <script src="fixtures.js"></script>
 </head>
 <body>
@@ -56,14 +62,26 @@
 
   await test('formats: detect by extension, MIME as fallback', function () {
     eq(QC.formats.detect('a.JPEG').key, 'jpg');
-    eq(QC.formats.detect('table.tsv').key, 'csv');
+    eq(QC.formats.detect('table.tsv').key, 'tsv');
+    eq(QC.formats.detect('page.HTM').key, 'html');
+    eq(QC.formats.detect('conf.yml').key, 'yaml');
     eq(QC.formats.detect('noext', 'image/png').key, 'png');
     eq(QC.formats.detect('x.xyz', ''), null);
   });
   await test('formats: outputs per type, WebP hidden when not encodable', function () {
-    eq(QC.formats.outputsFor('png', { webp: true }), ['jpg', 'png', 'webp', 'bmp', 'ico']);
-    eq(QC.formats.outputsFor('png', { webp: false }), ['jpg', 'png', 'bmp', 'ico']);
-    eq(QC.formats.outputsFor('xlsx'), ['csv', 'json']);
+    eq(QC.formats.outputsFor('png', { webp: true }), ['jpg', 'png', 'webp', 'gif', 'bmp', 'tiff', 'tga', 'qoi', 'ico', 'pdf']);
+    eq(QC.formats.outputsFor('png', { webp: false }), ['jpg', 'png', 'gif', 'bmp', 'tiff', 'tga', 'qoi', 'ico', 'pdf']);
+    eq(['DSC_1.NEF', 'IMG_2.CR3', 'a.dng', 'art.psd', 'tex.tga', 'x.ppm', 'App.icns'].map(function (n) { return QC.formats.detect(n).key; }),
+      ['raw', 'raw', 'raw', 'psd', 'tga', 'pnm', 'icns']);
+    eq(['IMG_1.HEIC', 'scan.tif', 'clip.MTS', 'voice.opus', 'logo.svg'].map(function (n) { return QC.formats.detect(n).key; }), ['heic', 'tiff', 'ts', 'opus', 'svg']);
+    eq(QC.formats.outputsFor('xlsx'), ['csv', 'tsv', 'ods', 'json', 'yaml', 'xml', 'html', 'md']);
+    eq(QC.formats.groupsFor('json').map(function (g) { return g.label + ':' + g.keys.join(','); }),
+      ['Data:json,yaml,xml', 'Tables:csv,tsv,xlsx,ods', 'Documents:html,md']);
+    eq(QC.formats.groupsFor('gif').map(function (g) { return g.label; }), ['Images', 'Video', 'Documents']);
+    eq([QC.formats.handler('gif', 'png'), QC.formats.handler('gif', 'mp4'), QC.formats.handler('mov', 'gif'), QC.formats.handler('csv', 'json'),
+      QC.formats.handler('mp4', 'mp3'), QC.formats.handler('flac', 'wav')], ['image', 'media', 'media', 'data', 'media', 'media']);
+    eq(QC.formats.groupsFor('mp4').map(function (g) { return g.label + ':' + g.keys.join(','); }),
+      ['Video:mp4,webm,mov,mkv', 'Audio:mp3,m4a,aac,ogg,opus,flac,wav', 'Images:gif']);
     eq(QC.formats.outputName('photo.final.png', 'jpg'), 'photo.final.jpg');
     eq(QC.formats.outputName('noext', 'csv'), 'noext.csv');
   });
@@ -143,8 +161,167 @@
     eq(QC.data.jsonToRows([1, 'a']), [['value'], [1], ['a']]);
     eq(QC.data.jsonToRows([{ n: { k: 1 }, z: null }]), [['n', 'z'], ['{"k":1}', '']]);
   });
-  await test('markdown html -> plain text', function () {
-    eq(QC.data.htmlToText('<h1>T</h1>\n<p>a &amp; b</p>\n<ul>\n<li>x</li>\n</ul>\n'), 'T\n\na & b\n\n- x\n');
+  await test('csv: output separator, TSV quoting', function () {
+    eq(QC.data.toCSV([['a;b', 'c'], ['1', '2']], ';'), '"a;b";c\r\n1;2\r\n');
+    eq(QC.data.toCSV([['a,b', 'c\td']], '\t'), 'a,b\t"c\td"\r\n');
+  });
+  await test('json: JSON Lines are read as a list', function () {
+    eq(QC.data.parseJSON('{"a":1}\n{"a":2}\n'), [{ a: 1 }, { a: 2 }]);
+  });
+
+  /* ---------- markup ---------- */
+
+  function tags(node) {
+    return (node.children || []).map(function (c) {
+      return c.text !== undefined ? c.text : c.name + (c.children.length ? '(' + tags(c).join(',') + ')' : '');
+    });
+  }
+  await test('html parser: implied end tags, void and raw elements, entities', function () {
+    var t = QC.markup.parseHtml('<ul><li>a<li>b</ul><p>x<p>y &amp; z&nbsp;<br>w<script>if (a < b) "</p>"<' + '/script></p>' +
+      '<table><tr><td>1<td>2<tr><td>3</table>');
+    eq(tags(t), ['ul(li(a),li(b))', 'p(x)', 'p(y & z\u00a0,br,w,script(if (a < b) "</p>"))', 'table(tr(td(1),td(2)),tr(td(3)))']);
+  });
+  await test('xml parser: CDATA, attributes, namespaces', function () {
+    var t = QC.markup.parseXml('<?xml version="1.0"?><w:doc a="1 &lt; 2"><w:t><![CDATA[<x>]]></w:t><e/></w:doc>');
+    var doc = t.children[0];
+    eq([doc.name, doc.attrs.a, QC.markup.textOf(doc), doc.children.length], ['w:doc', '1 < 2', '<x>', 2]);
+  });
+  await test('text decoding: UTF-8, BOMs, Windows-1251 guess', function () {
+    var cp1251 = new Uint8Array([0xcf, 0xf0, 0xe8, 0xe2, 0xb3, 0xf2, 0x2c, 0x20, 0xf1, 0xe2, 0xb3, 0xf2]);   // Привіт, світ
+    eq(QC.markup.decode(cp1251, 'auto'), { text: 'Привіт, світ', encoding: 'windows-1251' });
+    eq(QC.markup.decode(new TextEncoder().encode('é'), 'auto').encoding, 'utf-8');
+    eq(QC.markup.decode(new Uint8Array([0xff, 0xfe, 0x41, 0x00]), 'auto'), { text: 'A', encoding: 'utf-16le' });
+    eq(QC.markup.decode(new Uint8Array([0xe9]), 'windows-1252').text, 'é');
+  });
+
+  /* ---------- documents ---------- */
+
+  var PAGE = '<html><head><title>T</title></head><body><nav>menu</nav><main><h1>Title <small>x</small></h1>' +
+    '<p>Some <b>bold</b>, <i>italic</i> and <a href="https://e.x/a b">a link</a>. 1. not a list * star</p>' +
+    '<ul><li>one<ul><li>nested</li></ul></li><li>two</li></ul><ol start="3"><li>three</li></ol>' +
+    '<pre><code class="language-js">let a = 1;\n</code></pre><blockquote><p>quote</p></blockquote>' +
+    '<table><tr><th>A</th><th>B</th></tr><tr><td colspan="2">wide</td></tr><tr><td>1|2</td><td>3</td></tr></table></main></body></html>';
+
+  await test('document: HTML -> Markdown', function () {
+    var md = QC.doc.toMarkdown(QC.doc.fromHtml(PAGE, { mainOnly: true }));
+    eq(md, '# Title x\n\nSome **bold**, *italic* and [a link](<https://e.x/a b>). 1. not a list \\* star\n\n' +
+      '- one\n  - nested\n- two\n\n3. three\n\n```js\nlet a = 1;\n```\n\n> quote\n\n' +
+      '| A | B |\n| --- | --- |\n| wide |   |\n| 1\\|2 | 3 |\n');
+  });
+  await test('document: HTML -> plain text, menus kept unless main content only', function () {
+    var all = QC.doc.toText(QC.doc.fromHtml(PAGE));
+    ok(all.indexOf('menu') === 0, 'nav kept');
+    var txt = QC.doc.toText(QC.doc.fromHtml(PAGE, { mainOnly: true }));
+    ok(txt.indexOf('Title x\n=======') === 0, txt.slice(0, 40));
+    ok(txt.indexOf('a link (https://e.x/a b)') > 0, 'link target shown');
+    ok(txt.indexOf('A     B\n----  -\nwide\n1|2   3') > 0, 'aligned table:\n' + txt);
+  });
+  await test('document: Markdown escaping survives a round trip (loads marked)', async function () {
+    var doc = { title: '', blocks: [{ type: 'para', inlines: [{ text: '# not a heading *x* [y] <b>' }] }, { type: 'para', inlines: [{ text: '2. not a list' }] }] };
+    var back = await QC.doc.fromMarkdown(QC.doc.toMarkdown(doc));
+    eq(back.blocks.map(function (b) { return [b.type, QC.doc.plain(b.inlines)]; }), [['para', '# not a heading *x* [y] <b>'], ['para', '2. not a list']]);
+  });
+
+  // A .docx whose parts are deflate-compressed, the way Word saves them.
+  async function deflateZip(files) {
+    var enc = new TextEncoder(), parts = [], central = [], offset = 0;
+    for (var i = 0; i < files.length; i++) {
+      var name = enc.encode(files[i][0]), raw = enc.encode(files[i][1]);
+      var comp = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer());
+      var lh = new DataView(new ArrayBuffer(30));
+      lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(8, 8, true);
+      lh.setUint32(14, QC.zip.crc32(raw), true); lh.setUint32(18, comp.length, true); lh.setUint32(22, raw.length, true); lh.setUint16(26, name.length, true);
+      parts.push(lh.buffer, name, comp);
+      var cd = new DataView(new ArrayBuffer(46));
+      cd.setUint32(0, 0x02014b50, true); cd.setUint16(4, 20, true); cd.setUint16(6, 20, true); cd.setUint16(10, 8, true);
+      cd.setUint32(16, QC.zip.crc32(raw), true); cd.setUint32(20, comp.length, true); cd.setUint32(24, raw.length, true);
+      cd.setUint16(28, name.length, true); cd.setUint32(42, offset, true);
+      central.push(cd.buffer, name);
+      offset += 30 + name.length + comp.length;
+    }
+    var size = central.reduce(function (n, c) { return n + c.byteLength; }, 0), end = new DataView(new ArrayBuffer(22));
+    end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
+    end.setUint32(12, size, true); end.setUint32(16, offset, true);
+    return new Blob(parts.concat(central, [end.buffer])).arrayBuffer();
+  }
+
+  await test('docx: write then read keeps headings, lists, tables, links and marks', async function () {
+    var doc = QC.doc.fromHtml('<h2>Head</h2><p>A <b>b</b> <a href="https://e.x">link</a> <code>c()</code></p>' +
+      '<ol start="4"><li>four<ul><li>dot</li></ul></li><li>five</li></ol><table><tr><th>K</th><th>V</th></tr><tr><td>x</td><td>1</td></tr></table>' +
+      '<blockquote><p>q</p></blockquote><pre>line 1\n  line 2</pre>');
+    var blob = await QC.docx.write(doc, { font: 'Georgia', size: 12 });
+    var zip = QC.zip.read(await blob.arrayBuffer());
+    ok(zip.has('[Content_Types].xml') && zip.has('word/numbering.xml'), 'parts');
+    ok((await zip.text('word/styles.xml')).indexOf('w:ascii="Georgia"') > 0, 'font');
+    var back = await QC.docx.read(await blob.arrayBuffer());
+    eq(QC.doc.toMarkdown(back), '## Head\n\nA **b** [link](https://e.x) `c()`\n\n4. four\n   - dot\n5. five\n\n' +
+      '| K | V |\n| --- | --- |\n| x | 1 |\n\n> q\n\n```\nline 1\n  line 2\n```\n');
+  });
+  await test('docx: reads a deflate-compressed document with styles and numbering', async function () {
+    var W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"';
+    var buf = await deflateZip([
+      ['word/document.xml', '<w:document ' + W + '><w:body>' +
+        '<w:p><w:pPr><w:pStyle w:val="1"/></w:pPr><w:r><w:t>Заголовок</w:t></w:r></w:p>' +
+        '<w:p><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">Bold </w:t></w:r><w:r><w:rPr><w:b w:val="0"/></w:rPr><w:t xml:space="preserve">not </w:t></w:r>' +
+        '<w:hyperlink r:id="rId5"><w:r><w:t>site</w:t></w:r></w:hyperlink></w:p>' +
+        '<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="2"/></w:numPr></w:pPr><w:r><w:t>item</w:t></w:r></w:p>' +
+        '<w:p></w:p></w:body></w:document>'],
+      ['word/styles.xml', '<w:styles ' + W + '><w:style w:type="paragraph" w:styleId="1"><w:name w:val="heading 1"/></w:style></w:styles>'],
+      ['word/numbering.xml', '<w:numbering ' + W + '><w:abstractNum w:abstractNumId="7"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/></w:lvl></w:abstractNum>' +
+        '<w:num w:numId="2"><w:abstractNumId w:val="7"/></w:num></w:numbering>'],
+      ['word/_rels/document.xml.rels', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+        '<Relationship Id="rId5" Type="hyperlink" Target="https://example.com" TargetMode="External"/></Relationships>']
+    ]);
+    eq(QC.doc.toMarkdown(await QC.docx.read(buf)), '# Заголовок\n\n**Bold** not [site](https://example.com)\n\n1. item\n');
+  });
+
+  /* ---------- data ---------- */
+
+  await test('xml: elements, attributes and repeats become JSON and back', function () {
+    var v = QC.data.xmlToValue('<items v="1"><item id="a">x</item><item id="b"><n>2</n></item><e/></items>');
+    eq(JSON.parse(JSON.stringify(v)), { items: { '@v': '1', item: [{ '@id': 'a', '#text': 'x' }, { '@id': 'b', n: '2' }], e: '' } });
+    eq(QC.data.valueToXml(v, '2'), '<?xml version="1.0" encoding="UTF-8"?>\n<items v="1">\n  <item id="a">x</item>\n' +
+      '  <item id="b">\n    <n>2</n>\n  </item>\n  <e/>\n</items>\n');
+    eq(QC.data.valueToXml([{ 'a b': 1 }], 'min', 'row'), '<?xml version="1.0" encoding="UTF-8"?><root><row><a_b>1</a_b></row></root>');
+    eq(QC.data.jsonToRows(v), [['@id', '#text', 'n'], ['a', 'x', ''], ['b', '', '2']]);
+  });
+  await test('data: JSON reformat, YAML round trip (loads js-yaml)', async function () {
+    var src = file(['{"b":[1,{"z":true,"a":null}],"a":"x"}'], 'c.json');
+    var min = await QC.data.convert(src, { from: 'json', to: 'json', doc: { indent: 'min', sortKeys: true } }, noop);
+    eq(await min.blob.text(), '{"a":"x","b":[1,{"a":null,"z":true}]}');
+    var y = await QC.data.convert(src, { from: 'json', to: 'yaml', doc: { indent: '2' } }, noop);
+    eq(await y.blob.text(), 'b:\n  - 1\n  - z: true\n    a: null\na: x\n');
+    var back = await QC.data.convert(file([y.blob], 'c.yaml'), { from: 'yaml', to: 'json', doc: { indent: 'min' } }, noop);
+    eq(await back.blob.text(), '{"b":[1,{"z":true,"a":null}],"a":"x"}');
+  });
+  await test('data: tables from an HTML page, which table and header settings', async function () {
+    var page = file(['<table><tr><td>skip</td></tr></table><table><tr><th>n</th><th>v</th></tr><tr><td>a</td><td>07</td></tr><tr><td>b</td><td>2</td></tr></table>'], 'p.html');
+    var r = await QC.data.convert(page, { from: 'html', to: 'json', doc: { table: 1, indent: 'min' } }, noop);
+    eq([await r.blob.text(), r.rows, r.note, r.info.tables.length], ['[{"n":"a","v":"07"},{"n":"b","v":2}]', 2, 'table 2 of 2', 2]);
+    var noHead = await QC.data.convert(page, { from: 'html', to: 'json', doc: { table: 1, header: false, types: false, indent: 'min' } }, noop);
+    eq(await noHead.blob.text(), '[["n","v"],["a","07"],["b","2"]]');
+    var csv = await QC.data.convert(page, { from: 'html', to: 'csv', doc: { table: 1, csvDelimiter: ';', bom: false } }, noop);
+    eq(await csv.blob.text(), 'n;v\r\na;07\r\nb;2\r\n');
+  });
+  await test('data: JSON -> HTML as a table or as a list, Markdown table', async function () {
+    var list = file(['[{"a":1,"b":"x"},{"a":2}]'], 'l.json'), conf = file(['{"name":"app","opts":{"debug":true},"tags":[]}'], 'c.json');
+    var md = await QC.data.convert(list, { from: 'json', to: 'md' }, noop);
+    eq(await md.blob.text(), '| a | b |\n| --- | --- |\n| 1 | x |\n| 2 |   |\n');
+    var html = await QC.data.convert(conf, { from: 'json', to: 'html' }, noop);
+    var body = (await html.blob.text()).split('<body>\n')[1];
+    ok(body.indexOf('<ul>\n<li><strong>name</strong>: app</li>\n<li><strong>opts</strong>\n<ul>\n<li><strong>debug</strong>: true</li>') === 0, body.slice(0, 200));
+    ok(body.indexOf('<strong>tags</strong>: (empty list)') > 0, 'empty list');
+  });
+  await test('data: CSV -> ODS -> CSV (loads SheetJS)', async function () {
+    var ods = await QC.data.convert(file(['name,n\nA,1\nB,2\n'], 't.csv'), { from: 'csv', to: 'ods' }, noop);
+    var x = await QC.data.convert(file([ods.blob], 't.ods'), { from: 'ods', to: 'csv', doc: { bom: false } }, noop);
+    eq(await x.blob.text(), 'name,n\r\nA,1\r\nB,2\r\n');
+  });
+  await test('data: Markdown -> Word, with a page preview', async function () {
+    var r = await QC.data.convert(file(['# Hi\n\n- a\n- b\n'], 'n.md'), { from: 'md', to: 'docx' }, noop);
+    var back = await QC.docx.read(await r.blob.arrayBuffer());
+    eq(QC.doc.toMarkdown(back), '# Hi\n\n- a\n- b\n');
+    ok(r.previewHtml.indexOf('<h1>Hi</h1>') > 0, 'paper preview');
   });
 
   /* ---------- image settings ---------- */
@@ -163,19 +340,55 @@
     eq(QC.image.targetBytes(settings({ targetOn: false, targetValue: '700' })), 0);
   });
 
+  await test('image: crop comes first, then resize', function () {
+    var crop = { x: 0.25, y: 0, w: 0.5, h: 0.5 };
+    eq(QC.image.cropRect(400, 300, settings({ crop: crop })), { x: 100, y: 0, width: 200, height: 150 });
+    eq(QC.image.computeSize(400, 300, settings({ crop: crop, resizeMode: 'percent', percent: 50 })), { width: 100, height: 75 });
+    eq(QC.image.computeSize(400, 300, settings({ crop: crop, resizeMode: 'pixels', width: '100', lockAspect: true, lockDriver: 'w' })), { width: 100, height: 75 });
+  });
+
   /* ---------- end to end (runs on this page, not in a worker) ---------- */
 
   var png = await QCFixtures.photo(600, 400);
   var webp = document.createElement('canvas').toDataURL('image/webp').indexOf('data:image/webp') === 0;
 
   await test('image: PNG converts to every output and the result decodes', async function () {
-    var outs = ['jpg', 'png', 'bmp', 'ico'].concat(webp ? ['webp'] : []);
+    var outs = ['jpg', 'png', 'gif', 'bmp', 'ico'].concat(webp ? ['webp'] : []);
     for (var i = 0; i < outs.length; i++) {
       var r = await QC.image.convert(png, { to: outs[i], settings: settings() }, noop);
       var px = await pixelsOf(r.blob);
       var expect = outs[i] === 'ico' ? [256, 256] : [600, 400];
       eq([px.width, px.height], expect, outs[i]);
     }
+  });
+  // Four colours in quadrants: red, green / blue, yellow.
+  async function quadrants() {
+    var c = new OffscreenCanvas(400, 300), x = c.getContext('2d');
+    [['#ff0000', 0, 0], ['#00ff00', 200, 0], ['#0000ff', 0, 150], ['#ffff00', 200, 150]].forEach(function (q) { x.fillStyle = q[0]; x.fillRect(q[1], q[2], 200, 150); });
+    return new File([await c.convertToBlob({ type: 'image/png' })], 'quad.png', { type: 'image/png' });
+  }
+  function rgbAt(px, x, y) { var i = (y * px.width + x) * 4; return [px.data[i], px.data[i + 1], px.data[i + 2]]; }
+
+  await test('image: crop keeps exactly the chosen part', async function () {
+    var r = await QC.image.convert(await quadrants(), { from: 'png', to: 'png', settings: settings({ crop: { x: 0.5, y: 0, w: 0.5, h: 1 } }) }, noop);
+    var px = await pixelsOf(r.blob);
+    eq([px.width, px.height, rgbAt(px, 10, 10), rgbAt(px, 190, 290)], [200, 300, [0, 255, 0], [255, 255, 0]]);
+  });
+  await test('image: TIFF written, then read back (loads UTIF)', async function () {
+    var tif = await QC.image.convert(await quadrants(), { from: 'png', to: 'tiff', settings: settings() }, noop);
+    var b = new Uint8Array(await tif.blob.arrayBuffer());
+    eq([b[0], b[1], b[2], tif.blob.type, tif.blob.size > 400 * 300 * 3], [0x49, 0x49, 42, 'image/tiff', true]);
+    var back = await QC.image.convert(new File([tif.blob], 'q.tif'), { from: 'tiff', to: 'png', settings: settings() }, noop);
+    var px = await pixelsOf(back.blob);
+    eq([px.width, px.height, rgbAt(px, 10, 10), rgbAt(px, 390, 290)], [400, 300, [255, 0, 0], [255, 255, 0]]);
+  });
+  await test('image: HEIC photo (made by Windows) reads (loads libheif)', async function () {
+    var bin = atob('AAAAIGZ0eXBoZWljAAAAAG1pZjFoZWljbWlhZk1pSEIAAAFAbWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAAAAAAAOcGl0bQAAAAAAAQAAACNpaW5mAAAAAAABAAAAFWluZmUCAAAAAAEAAGh2YzEAAAAAHmlsb2MAAAAARAAAAQABAAAAAQAAAagAAAMRAAAAxGlwcnAAAACmaXBjbwAAABRpc3BlAAAAAAAAAZAAAAEsAAAAemh2Y0MBAUAAAACwAAAAAAAG8AD8/fj4AQALA6AAAQAYQAEMAf//AUAAAAMAsAAAAwAAAwAGKgJAoQABACxCAQEBQAAAAwCwAAADAAADAAagDIgEx98qTty5NwENAgQAAAMBkAAAAwGQIKIAAQAIRAHAcYUkmyAAAAAQcGl4aQAAAAADCAgIAAAAFmlwbWEAAAAAAAAAAQABAwGCAwAAAEBmcmVlAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMZbWRhdAAAAw0oAa8LkFDcNzSQGqY/84n//qH2Xtr9zsOsHi129EXuwWABJgAAAwAAAwJKAAAOQiS3j9IF9VWstcx6WmlWPt/bHxDjMh65gbwgvFliH+J/j//LgNGWTtlXRRCOwTc8UjXfNuqk7Qdk1hFwX7IVvWkwfQnOAAVwACS7GqY/84n//qH2Xtr9zsOsHi129EXuwWABJgAAAwAAAwJKAAAOQiS3j9IF9VWstcx6WmlWPt/bHxDjMh65gbwgvFliH+J/j//LgNGWTtlXRRCOwTc8UjXfNuqk7Qdk1hFwX7IVvWkwfQnOAAVwACS7b8SLGP/OJ//6h9l7a/c57uAXYsxBnsGm2kzd7ioAvK7nnx1nMdJGOrDjfeVl2mCY20Xld1iv9+T8V3PuGnRgqVCoqpIPc3kjGMUr+HsBHs7M0kBeAAADAAADACTgAACckpjMnz8n0HJuT8CVlhN4lTmpVv8TXKxOtEG07xYLb3rBGatGWTtliD2Hxkl72vX1WvkQ+dcq8U+Z13GaDsOMtXVJ9SXL7RLI6YEHmw2NfSG5R2WfslXUe99PbJF7i91niihT/BBp8eVJrRCfgzSTX9zIslqMIcUzxwd/+XISPbv+Yt8NcpOsoFytGcEqpgFJt1eJdZfh6qtolSuzQDBJrlGEW2kz4Hmd/HIZpdNdrwKDB8VGNLux/qIyS4TfwLnUGmBKBu2rE9170TxF3+rYhwY66+Xm8Ipyj/bhiZDouXXIN2vFWhzEfTixZ3dgCJHrhZK22DUQ+Vch1SRIo3x1ogcJVy5A2bru4a7wyw8F6RskhWQq4tNQrs7g/Igs0ZBU01jEd0xOBIBA919opyEN8NizY0UsAAs1WuP/YuXq6YAI0JvgoBqmP/ggfX+z5//DpzsOsHi129EXuwWABJgAAAMAAAkoAAA4q9SJP0gX1VsaGjEelzjqLHt/sT98+MyHrxs/2HH3ach/ijGknl8uA9Lh49rlhYUOweUUyToljMtz4w4lH7tyuM/hHQXe7IJxCwABaAAJDwAyQAAAsRAqAAADAAQc'), bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    var r = await QC.image.convert(new File([bytes], 'quad.heic'), { from: 'heic', to: 'png', settings: settings() }, noop);
+    var px = await pixelsOf(r.blob), red = rgbAt(px, 50, 50), yellow = rgbAt(px, 350, 250);
+    ok(px.width === 400 && px.height === 300, px.width + ' x ' + px.height);
+    ok(red[0] > 200 && red[1] < 60 && yellow[0] > 200 && yellow[1] > 200 && yellow[2] < 60, JSON.stringify([red, yellow]));
   });
   await test('image: GIF gives the first frame', async function () {
     var r = await QC.image.convert(QCFixtures.gif(), { to: 'png', settings: settings() }, noop);
@@ -215,6 +428,233 @@
     eq([a.rows, b.rows, c.rows], [500, 500, 500]);
     eq(QC.data.parseCSV(await c.blob.text()), QC.data.parseCSV(csv));
     eq([c.preview.length, c.preview[0][0], c.preview[1][2]], [201, 'id', '0001'], 'preview rows for the page');
+  });
+
+  /* ---------- video (loads Mediabunny and gifenc; needs WebCodecs) ---------- */
+
+  // A 2 s WebM: 10 coloured frames per second and a 440 Hz tone at half volume.
+  async function makeVideo() {
+    var M = await QC.loadCjs(QC.libs.mediabunny);
+    var format = new M.WebMOutputFormat(), output = new M.Output({ format: format, target: new M.BufferTarget() });
+    var canvas = new OffscreenCanvas(160, 120), ctx = canvas.getContext('2d');
+    var codec = await M.getFirstEncodableVideoCodec(format.getSupportedVideoCodecs(), { width: 160, height: 120 });
+    var video = new M.CanvasSource(canvas, { codec: codec, bitrate: M.QUALITY_MEDIUM });
+    var audio = new M.AudioSampleSource({ codec: 'opus', bitrate: 64e3 });
+    output.addVideoTrack(video);
+    output.addAudioTrack(audio);
+    await output.start();
+    for (var i = 0; i < 20; i++) {
+      ctx.fillStyle = 'hsl(' + i * 18 + ', 70%, 50%)';
+      ctx.fillRect(0, 0, 160, 120);
+      await video.add(i / 10, 0.1);
+    }
+    var tone = new Float32Array(48000 * 2);
+    for (var k = 0; k < tone.length; k++) tone[k] = 0.5 * Math.sin(2 * Math.PI * 440 * k / 48000);
+    await audio.add(new M.AudioSample({ data: tone, format: 'f32', numberOfChannels: 1, sampleRate: 48000, timestamp: 0 }));
+    video.close();
+    audio.close();
+    await output.finalize();
+    return new File([output.target.buffer], 'clip.webm', { type: 'video/webm' });
+  }
+
+  // Loudest sample of the file's sound between `from` and `to` seconds (default 0.2 to 1).
+  async function peak(blob, from, to) {
+    var M = await QC.loadCjs(QC.libs.mediabunny);
+    var input = new M.Input({ source: new M.BlobSource(blob), formats: M.ALL_FORMATS });
+    var track = await input.getPrimaryAudioTrack(), max = 0;
+    for await (var sample of new M.AudioSampleSink(track).samples(from === undefined ? 0.2 : from, to || 1)) {
+      var data = new Float32Array(sample.allocationSize({ planeIndex: 0, format: 'f32' }) / 4);
+      sample.copyTo(data, { planeIndex: 0, format: 'f32' });
+      for (var i = 0; i < data.length; i++) max = Math.max(max, Math.abs(data[i]));
+      sample.close();
+    }
+    return max;
+  }
+
+  await test('video: repairs the malformed H.264 setup block from Firefox encoders, leaves good ones alone', function () {
+    function bytes(h) { return new Uint8Array(h.split(' ').map(function (x) { return parseInt(x, 16); })); }
+    function hex(u) { return Array.from(u).map(function (x) { return ('0' + x.toString(16)).slice(-2); }).join(' '); }
+    var zen = bytes('01 64 00 0d 03 01 00 1a 67 67 64 00 0d ac 2c ac 14 1f a1 00 00 03 00 01 00 00 03 00 3c 0d a0 88 45 38 01 00 05 68 68 ce 3c 30');
+    eq(hex(QC.video.fixAvcC(zen)), '01 64 00 0d ff e1 00 19 67 64 00 0d ac 2c ac 14 1f a1 00 00 03 00 01 00 00 03 00 3c 0d a0 88 45 38 01 00 04 68 ce 3c 30');
+    var good = bytes('01 64 0c 1f ff e1 00 13 67 64 0c 1f ac 18 d0 0a 00 b7 4d c0 43 40 41 e1 10 8d 40 01 00 04 68 ce 3c 80 fd f8 f8 00');
+    ok(QC.video.fixAvcC(good) === good, 'a valid block is returned as it is');
+  });
+
+  if (QC.video.supported()) {
+    var clip = await makeVideo();
+    await test('video: probe reads length, size and tracks', async function () {
+      var info = await QC.video.probe(clip);
+      ok(Math.abs(info.duration - 2) < 0.15, 'duration ' + info.duration);
+      eq([info.width, info.height, !!info.audioCodec], [160, 120, true]);
+    });
+    await test('video: trim, smaller size and mute (WebM -> MP4)', async function () {
+      var r = await QC.video.convert(clip, { from: 'webm', to: 'mp4', video: { start: 0.5, end: 1.5, height: '60', volume: 0 } }, noop);
+      var info = await QC.video.probe(r.blob);
+      ok(Math.abs(info.duration - 1) < 0.15, 'duration ' + info.duration);
+      eq([info.height, info.audioCodec, r.blob.type], [60, null, 'video/mp4']);
+    });
+    await test('video: volume 50% halves the sound, 200% doubles it', async function () {
+      var base = await peak(clip);
+      var half = await peak((await QC.video.convert(clip, { from: 'webm', to: 'webm', video: { volume: 50 } }, noop)).blob);
+      var twice = await peak((await QC.video.convert(clip, { from: 'webm', to: 'webm', video: { volume: 200 } }, noop)).blob);
+      ok(Math.abs(half / base - 0.5) < 0.1, 'half: ' + half + ' of ' + base);
+      ok(twice > base * 1.6, 'twice: ' + twice + ' of ' + base);
+    });
+    await test('video: to GIF and back to video', async function () {
+      var gif = await QC.video.convert(clip, { from: 'webm', to: 'gif', video: { fps: '10' } }, noop);
+      eq(new TextDecoder().decode(new Uint8Array(await gif.blob.slice(0, 6).arrayBuffer())), 'GIF89a');
+      var dec = new ImageDecoder({ data: await gif.blob.arrayBuffer(), type: 'image/gif' });
+      await dec.tracks.ready;
+      await dec.completed;
+      eq([dec.tracks.selectedTrack.frameCount, (await dec.decode()).image.displayWidth], [20, 160]);
+      var back = await QC.video.convert(new File([gif.blob], 'a.gif'), { from: 'gif', to: 'webm', video: {} }, noop);
+      var info = await QC.video.probe(back.blob);
+      ok(Math.abs(info.duration - 2) < 0.15 && info.width === 160, JSON.stringify(info));
+    });
+
+    // 3 s of a 440 Hz tone at half volume, 44.1 kHz stereo.
+    var rate = 44100, frames = rate * 3, wav = new DataView(new ArrayBuffer(44 + frames * 4));
+    [[0, 'RIFF'], [8, 'WAVE'], [12, 'fmt '], [36, 'data']].forEach(function (t) {
+      for (var c = 0; c < 4; c++) wav.setUint8(t[0] + c, t[1].charCodeAt(c));
+    });
+    wav.setUint32(4, 36 + frames * 4, true); wav.setUint32(16, 16, true); wav.setUint16(20, 1, true); wav.setUint16(22, 2, true);
+    wav.setUint32(24, rate, true); wav.setUint32(28, rate * 4, true); wav.setUint16(32, 4, true); wav.setUint16(34, 16, true);
+    wav.setUint32(40, frames * 4, true);
+    for (var f = 0; f < frames; f++) {
+      var v = Math.round(16383 * Math.sin(2 * Math.PI * 440 * f / rate));
+      wav.setInt16(44 + f * 4, v, true); wav.setInt16(46 + f * 4, v, true);
+    }
+    var tone = new File([wav.buffer], 'tone.wav', { type: 'audio/wav' });
+
+    await test('audio: WAV to MP3 (trim, mono), M4A and OGG', async function () {
+      var info = await QC.video.probe(tone);
+      eq([Math.round(info.duration * 10) / 10, info.channels, info.sampleRate, info.width], [3, 2, 44100, undefined]);
+      var mp3 = await QC.video.convert(tone, { from: 'wav', to: 'mp3', video: { start: 0.5, end: 2.5, channels: '1', quality: 'medium' } }, noop);
+      var m = await QC.video.probe(mp3.blob);
+      ok(Math.abs(m.duration - 2) < 0.1, 'mp3 duration ' + m.duration);
+      eq([m.audioCodec, m.channels, mp3.blob.type], ['mp3', 1, 'audio/mpeg']);
+      var m4a = await QC.video.probe((await QC.video.convert(tone, { from: 'wav', to: 'm4a', video: {} }, noop)).blob);
+      var ogg = await QC.video.probe((await QC.video.convert(tone, { from: 'wav', to: 'ogg', video: {} }, noop)).blob);
+      eq([m4a.audioCodec, ogg.audioCodec], ['aac', 'opus']);
+    });
+    await test('audio: fades follow the trimmed part, volume 0 is refused', async function () {
+      var r = await QC.video.convert(tone, { from: 'wav', to: 'wav', video: { start: 1, fadeIn: 1, fadeOut: 1, rate: '22050' } }, noop);
+      var info = await QC.video.probe(r.blob);
+      eq([Math.round(info.duration * 10) / 10, info.sampleRate], [2, 22050]);
+      var start = await peak(r.blob, 0, 0.05), middle = await peak(r.blob, 0.9, 1.1), end = await peak(r.blob, 1.95, 2);
+      // The sink hands out sound in chunks of about 0.1 s, so the edges include a little of the fade.
+      ok(start < 0.12 && end < 0.12 && Math.abs(middle - 0.5) < 0.05, JSON.stringify({ start: start, middle: middle, end: end }));
+      var refused = await QC.video.convert(tone, { from: 'wav', to: 'mp3', video: { volume: 0 } }, noop).then(function () { return false; }, function (e) { return e.code; });
+      eq(refused, 'settings');
+    });
+    await test('video and audio: MOV, MKV, FLAC, AAC and Opus outputs', async function () {
+      var mov = await QC.video.probe((await QC.video.convert(clip, { from: 'webm', to: 'mov', video: {} }, noop)).blob);
+      var mkv = await QC.video.probe((await QC.video.convert(clip, { from: 'webm', to: 'mkv', video: {} }, noop)).blob);
+      ok(Math.abs(mov.duration - 2) < 0.15 && mov.width === 160 && Math.abs(mkv.duration - 2) < 0.15, JSON.stringify([mov, mkv]));
+      var codecs = [];
+      for (var to of ['flac', 'aac', 'opus']) codecs.push((await QC.video.probe((await QC.video.convert(tone, { from: 'wav', to: to, video: {} }, noop)).blob)).audioCodec);
+      eq(codecs, ['flac', 'aac', 'opus']);
+    });
+    await test('audio: the sound of a video, saved as MP3', async function () {
+      var r = await QC.video.convert(clip, { from: 'webm', to: 'mp3', video: {} }, noop);
+      var info = await QC.video.probe(r.blob);
+      ok(Math.abs(info.duration - 2) < 0.15 && info.audioCodec === 'mp3' && !info.width, JSON.stringify(info));
+    });
+  }
+
+  /* ---------- more image formats (hand-made sample files) ---------- */
+
+  function u8(list) { return new Uint8Array(list); }
+  async function readAs(type, bytes, name) {
+    var r = await QC.image.convert(new File([bytes], name || 'x'), { from: type, to: 'png', settings: settings() }, noop);
+    return pixelsOf(r.blob);
+  }
+  function be16(v) { return [v >> 8 & 255, v & 255]; }
+  function be32(v) { return [v >>> 24 & 255, v >> 16 & 255, v >> 8 & 255, v & 255]; }
+
+  await test('psd: flattened RGB + transparency, RLE rows', async function () {
+    // 2 x 1: a red opaque pixel and a blue half-transparent one. Each row: a PackBits literal run.
+    var rows = [[255, 0], [0, 0], [0, 255], [255, 128]];                    // R, G, B, A channels
+    var packed = rows.map(function (r) { return [1].concat(r); });         // "copy the next 2 bytes"
+    var head = [0x38, 0x42, 0x50, 0x53].concat(be16(1), [0, 0, 0, 0, 0, 0], be16(4), be32(1), be32(2), be16(8), be16(3));
+    var bytes = head.concat(be32(0), be32(0), be32(0), be16(1));
+    packed.forEach(function (r) { bytes = bytes.concat(be16(r.length)); });
+    packed.forEach(function (r) { bytes = bytes.concat(r); });
+    var px = await readAs('psd', u8(bytes), 'a.psd');
+    eq([px.width, px.height, Array.from(px.data.subarray(0, 8))], [2, 1, [255, 0, 0, 255, 0, 0, 255, 128]]);
+  });
+  await test('psd: 16-bit grayscale, uncompressed', async function () {
+    var head = [0x38, 0x42, 0x50, 0x53].concat(be16(1), [0, 0, 0, 0, 0, 0], be16(1), be32(1), be32(2), be16(16), be16(1));
+    var px = await readAs('psd', u8(head.concat(be32(0), be32(0), be32(0), be16(0), [0x80, 0x00, 0xff, 0xff])), 'g.psd');
+    eq(Array.from(px.data.subarray(0, 8)), [128, 128, 128, 255, 255, 255, 255, 255]);
+  });
+  await test('tga: written then read back; bottom-up RLE file', async function () {
+    var tga = await QC.image.convert(await quadrants(), { from: 'png', to: 'tga', settings: settings() }, noop);
+    var px = await readAs('tga', new Uint8Array(await tga.blob.arrayBuffer()));
+    eq([px.width, px.height, rgbAt(px, 10, 10), rgbAt(px, 390, 290)], [400, 300, [255, 0, 0], [255, 255, 0]]);
+    // 2 x 2, 24-bit, RLE, rows from the bottom: a run of 2 green (bottom row), then 2 literal pixels (top row).
+    var file = [0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 24, 0, 0x81, 0, 255, 0, 0x01, 255, 0, 0, 0, 0, 255];
+    var px2 = await readAs('tga', u8(file));
+    eq([rgbAt(px2, 0, 0), rgbAt(px2, 1, 0), rgbAt(px2, 0, 1)], [[0, 0, 255], [255, 0, 0], [0, 255, 0]]);
+  });
+  await test('qoi: written then read back exactly', async function () {
+    var c = new OffscreenCanvas(64, 48), x = c.getContext('2d');
+    for (var i = 0; i < 300; i++) {
+      x.fillStyle = 'rgba(' + (i * 37 % 256) + ',' + (i * 91 % 256) + ',' + (i * 13 % 256) + ',' + (i % 7 ? 1 : 0.5) + ')';
+      x.fillRect(i * 7 % 64, i * 3 % 48, 5, 4);
+    }
+    var src = x.getImageData(0, 0, 64, 48);
+    var r = await QC.codecs.read('qoi', new File([QC.codecs.qoi(src)], 'a.qoi'));
+    var d = new OffscreenCanvas(64, 48).getContext('2d');
+    d.drawImage(r, 0, 0);
+    var got = d.getImageData(0, 0, 64, 48).data, same = true;
+    for (var j = 0; j < got.length; j++) if (Math.abs(got[j] - src.data[j]) > (j % 4 === 3 ? 0 : 1)) { same = false; break; }
+    ok(same, 'pixels differ at byte ' + j);
+  });
+  await test('netpbm: PPM text and binary, PGM, PBM text and binary', async function () {
+    var enc = new TextEncoder();
+    var p3 = await readAs('pnm', enc.encode('P3\n# comment\n2 1 255\n255 0 0  0 0 255\n'));
+    eq([rgbAt(p3, 0, 0), rgbAt(p3, 1, 0)], [[255, 0, 0], [0, 0, 255]]);
+    var p6 = await readAs('pnm', u8(Array.from(enc.encode('P6 1 1 255\n')).concat([10, 20, 30])));
+    var p5 = await readAs('pnm', u8(Array.from(enc.encode('P5 1 1 65535\n')).concat([0xff, 0xff])));
+    var p1 = await readAs('pnm', enc.encode('P1\n2 1\n10\n'));
+    var p4 = await readAs('pnm', u8(Array.from(enc.encode('P4\n3 1\n')).concat([0x40])));
+    eq([rgbAt(p6, 0, 0), rgbAt(p5, 0, 0), rgbAt(p1, 0, 0), rgbAt(p1, 1, 0), rgbAt(p4, 0, 0), rgbAt(p4, 1, 0)],
+      [[10, 20, 30], [255, 255, 255], [0, 0, 0], [255, 255, 255], [255, 255, 255], [0, 0, 0]]);
+  });
+  await test('icns: the largest PNG inside', async function () {
+    var png = new Uint8Array(await (await QC.image.convert(await quadrants(), { from: 'png', to: 'png', settings: settings() }, noop)).blob.arrayBuffer());
+    var file = [0x69, 0x63, 0x6e, 0x73].concat(be32(16 + png.length), [0x69, 0x63, 0x31, 0x30], be32(8 + png.length), Array.from(png));
+    var px = await readAs('icns', u8(file));
+    eq([px.width, rgbAt(px, 390, 290)], [400, [255, 255, 0]]);
+  });
+  await test('raw: the camera picture inside, not the sensor data, turned upright', async function () {
+    var c = new OffscreenCanvas(40, 20), x = c.getContext('2d');
+    x.fillStyle = '#ff0000'; x.fillRect(0, 0, 20, 20); x.fillStyle = '#0000ff'; x.fillRect(20, 0, 20, 20);
+    var jpeg = Array.from(new Uint8Array(await (await c.convertToBlob({ type: 'image/jpeg', quality: 0.95 })).arrayBuffer()));
+    // TIFF header, IFD0 with one tag: orientation 6 (turn 90 degrees clockwise).
+    var tiff = [0x49, 0x49, 42, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0];
+    // "Sensor data": a bigger lossless JPEG (SOF3), which browsers can't show and must be skipped.
+    var lossless = [0xff, 0xd8, 0xff, 0xc3, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x11, 0, 0xff, 0xda, 0, 8, 1, 1, 0, 0, 0, 0].concat(new Array(5000).fill(7), [0xff, 0xd9]);
+    var px = await readAs('raw', u8(tiff.concat(lossless, jpeg)), 'photo.dng');
+    eq([px.width, px.height], [20, 40]);
+    var top = rgbAt(px, 10, 5), bottom = rgbAt(px, 10, 35);
+    ok(top[0] > 200 && top[2] < 60 && bottom[2] > 200 && bottom[0] < 60, 'red on top, blue below: ' + JSON.stringify([top, bottom]));
+  });
+  await test('pdf: one page holding the JPEG, valid cross-reference table', async function () {
+    var r = await QC.image.convert(await quadrants(), { from: 'png', to: 'pdf', settings: settings({ quality: 80 }) }, noop);
+    var text = new TextDecoder('latin1').decode(new Uint8Array(await r.blob.arrayBuffer()));
+    ok(text.indexOf('%PDF-1.4') === 0 && r.blob.type === 'application/pdf', 'header');
+    var xref = +/startxref\n(\d+)/.exec(text)[1];
+    eq(text.slice(xref, xref + 4), 'xref');
+    var entries = text.slice(xref).split('\n').slice(3, 8).map(function (l) { return +l.slice(0, 10); });
+    eq(entries.map(function (o) { return text.slice(o, o + 7); }), ['1 0 obj', '2 0 obj', '3 0 obj', '4 0 obj', '5 0 obj']);
+    ok(text.indexOf('/MediaBox [0 0 300.00 225.00]') > 0 && text.indexOf('/Width 400 /Height 300') > 0, 'page and image size');
+  });
+  await test('preview: formats a browser can\u2019t show are previewed as PNG, sized as the real file', async function () {
+    var bm = await createImageBitmap(await quadrants());
+    var r = await QC.image.preview({ bitmap: bm, srcWidth: 400, srcHeight: 300, to: 'tiff', settings: settings() });
+    eq([r.blob.type, r.estimate > 400 * 300 * 3], ['image/png', true]);
   });
 
   /* ---------- report ---------- */

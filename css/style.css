@@ -72,6 +72,7 @@ html.viewer-open { overflow: hidden; }
 body {
   margin: 0;
   min-height: 100vh;
+  min-height: 100dvh;  /* phones: the height without the browser bars that come and go */
   display: flex;
   flex-direction: column;
   background: var(--bg);
@@ -164,6 +165,7 @@ body { --page-w: 672px; }
     position: sticky;
     top: 16px;
     max-height: calc(100vh - 32px);
+    max-height: calc(100dvh - 32px);
     overflow: auto;
     overscroll-behavior: contain;
     border-radius: 16px;
@@ -189,12 +191,18 @@ body { --page-w: 672px; }
   transition: background-color .15s, border-color .15s, padding .2s;
 }
 .drop svg { width: 32px; height: 32px; color: var(--muted); }
-.drop:hover, .drop.is-drag { background: var(--surface); border-color: var(--muted); }
+/* Hover effects only where there is a mouse: touch screens keep :hover after a tap, so a tapped
+   file would look selected and a tapped button pressed. */
+.drop.is-drag { background: var(--surface); border-color: var(--muted); }
+@media (hover: hover) { .drop:hover { background: var(--surface); border-color: var(--muted); } }
 .drop.is-drag { border-style: solid; }
 .drop.is-compact { margin-top: 2px; padding: 28px 20px; }
 .drop.is-compact svg { width: 24px; height: 24px; }
 .drop-title { font-size: 18px; font-weight: 600; }
 .drop-sub { font-size: 13px; color: var(--muted); }
+/* Touch screens: nothing to drop or paste, just tap. */
+.drop-touch { display: none; }
+@media (pointer: coarse) { .drop-mouse { display: none; } .drop-touch { display: inline; } }
 
 /* ---------- buttons and inputs ---------- */
 
@@ -216,13 +224,16 @@ body { --page-w: 672px; }
   white-space: nowrap;
   cursor: pointer;
 }
-.btn:hover { background: var(--surface-2); }
 .btn:disabled { opacity: .5; cursor: default; }
-.btn:disabled:hover { background: var(--surface); }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.btn-primary:hover, .btn-primary:disabled:hover { background: var(--accent); }
 .btn-quiet { background: transparent; border-color: transparent; }
-.btn-quiet:hover { background: var(--surface-2); }
+@media (hover: hover) { 
+  .btn:hover { background: var(--surface-2); }
+  .btn:disabled:hover { background: var(--surface); }
+  .btn-primary:hover, .btn-primary:disabled:hover { background: var(--accent); }
+  .btn-quiet:hover { background: var(--surface-2); }
+  .btn-quiet:disabled:hover { background: transparent; }
+}
 .btn:active:not(:disabled), .icon-btn:active { background: var(--surface-2); }
 .btn-primary:active:not(:disabled) { background: var(--accent); filter: brightness(.9); }
 .btn-small { min-height: 32px; padding: 4px 12px; font-size: 13px; }
@@ -242,7 +253,8 @@ body { --page-w: 672px; }
   color: var(--muted);
   cursor: pointer;
 }
-.icon-btn:hover, .icon-btn[aria-expanded="true"] { color: var(--text); background: var(--surface-2); }
+.icon-btn[aria-expanded="true"] { color: var(--text); background: var(--surface-2); }
+@media (hover: hover) { .icon-btn:hover { color: var(--text); background: var(--surface-2); } }
 
 .select, .input {
   height: var(--control-h);
@@ -265,7 +277,7 @@ body { --page-w: 672px; }
   background-size: 14px;
   cursor: pointer;
 }
-.select:disabled { opacity: .6; cursor: default; }
+.select:disabled { opacity: .5; cursor: default; }
 .input { width: 96px; }
 
 /* Number fields without the browser's up/down arrows (keyboard arrows still step). */
@@ -274,7 +286,34 @@ input[type="number"]::-webkit-inner-spin-button,
 input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .input:disabled { opacity: .5; }
 
-input[type="checkbox"] { accent-color: var(--accent); }
+/* Checkboxes like the other controls: outlined box, filled with the accent when on. */
+input[type="checkbox"] {
+  -webkit-appearance: none;
+  appearance: none;
+  display: inline-grid;
+  place-content: center;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  border: var(--line) solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  cursor: pointer;
+  transition: background-color var(--fast), border-color var(--fast);
+}
+input[type="checkbox"]::before {
+  content: "";
+  width: 10px;
+  height: 5px;
+  margin-top: -2px;
+  border: solid var(--on-accent);
+  border-width: 0 0 2px 2px;
+  transform: rotate(-45deg) scale(0);
+  transition: transform var(--fast);
+}
+input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
+input[type="checkbox"]:checked::before { transform: rotate(-45deg) scale(1); }
+@media (hover: hover) { .check:hover input:not(:checked) { border-color: var(--muted); } }
 
 /* Range slider in the same style as the other controls: outlined track, filled up to --fill. */
 input[type="range"] {
@@ -328,7 +367,7 @@ input[type="range"]::-moz-range-thumb {
 input[type="range"]:focus-visible { outline: none; }
 input[type="range"]:focus-visible::-webkit-slider-thumb { outline: 2px solid var(--accent); outline-offset: 2px; }
 input[type="range"]:focus-visible::-moz-range-thumb { outline: 2px solid var(--accent); outline-offset: 2px; }
-input[type="range"]:disabled { opacity: .45; cursor: default; }
+input[type="range"]:disabled { opacity: .5; cursor: default; }
 
 /* Option groups (Original / Percent / Pixels, Auto / Target, zoom): same height as menus. */
 .segmented, .zoom-group {
@@ -361,7 +400,7 @@ input[type="range"]:disabled { opacity: .45; cursor: default; }
   animation: rise-in .22s var(--ease);
   transition: background-color var(--fast), box-shadow .15s;
 }
-.file:not(.is-open):hover { background: var(--surface-2); }
+@media (hover: hover) { .file:not(.is-open):hover { background: var(--surface-2); } }
 /* Chosen with Ctrl / Shift click: Convert and Copy settings apply to these. */
 .file.is-selected { background: var(--surface-2); box-shadow: inset 4px 0 0 var(--accent); }
 .link-btn { padding: 0; border: 0; background: none; color: var(--text); font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
@@ -385,7 +424,7 @@ input[type="range"]:disabled { opacity: .45; cursor: default; }
   text-overflow: ellipsis;
   cursor: pointer;
 }
-.file-name:hover { text-decoration: underline; text-underline-offset: 3px; }
+@media (hover: hover) { .file-name:hover { text-decoration: underline; text-underline-offset: 3px; } }
 .file-meta { font-size: 13px; }
 .file-controls { display: flex; align-items: center; gap: 2px; margin-left: auto; }
 .file-target { margin-right: 4px; }
@@ -428,6 +467,9 @@ input[type="range"]:disabled { opacity: .45; cursor: default; }
 .panel-title { position: relative; flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
 .panel-top { order: 1; flex: 1 0 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .panel-close { flex: none; }
+/* Below a file (phones) the panel folds up: an arrow, so it isn't a second × under the file's "remove". */
+.panel-close .i-x, .col-side .panel-close .i-up { display: none; }
+.col-side .panel-close .i-x { display: block; }
 @container (min-width: 560px) {
   .head-main { flex-wrap: nowrap; }
   .panel-title { margin-right: 8px; }
@@ -461,7 +503,7 @@ input[type="range"]:disabled { opacity: .45; cursor: default; }
   font-weight: 600;
   text-overflow: ellipsis;
 }
-.name-edit:hover .p-name { border-color: var(--border); }
+@media (hover: hover) { .name-edit:hover .p-name { border-color: var(--border); } }
 .p-name:focus { outline: none; border-color: var(--accent); background: var(--bg); }
 .name-edit svg { flex: none; width: 16px; height: 16px; color: var(--muted); pointer-events: none; }
 .name-measure { position: absolute; top: 0; left: 0; visibility: hidden; white-space: pre; font-size: 16px; font-weight: 600; pointer-events: none; }
@@ -515,7 +557,8 @@ input[type="range"]:disabled { opacity: .45; cursor: default; }
 }
 .font-results li { display: flex; justify-content: space-between; gap: 8px; padding: 7px 10px; border-radius: 8px; font-size: 14px; cursor: pointer; }
 .font-results li .muted { font-size: 12px; }
-.font-results li.is-active, .font-results li:hover { background: var(--surface-2); }
+.font-results li.is-active { background: var(--surface-2); }
+@media (hover: hover) { .font-results li:hover { background: var(--surface-2); } }
 .font-results li.font-none { cursor: default; background: none; }
 .settings-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
 .panel-preview { min-width: 0; }
@@ -542,6 +585,14 @@ fieldset.field > legend { padding: 0; margin-bottom: 8px; }
 .swatch .bg-pick:focus-visible + span, .swatch .pg-pick:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
 .bg-custom-chip { background: conic-gradient(#e0553a, #e8b93a, #3fbf63, #3aa6e0, #9a55e0, #e0553a) !important; }
 .swatch-custom .bg-pick:checked + .bg-custom-chip, .swatch-custom .pg-pick:checked + .bg-custom-chip { background: var(--c) !important; }
+
+/* Checkboxes in the settings (data and document files). */
+.checks { display: flex; flex-direction: column; gap: 2px; }
+.check { display: flex; align-items: center; gap: 10px; min-height: 32px; font-size: 14px; cursor: pointer; }
+.check input { flex: none; }
+.check .muted { font-size: 13px; }
+.docx-font { flex-wrap: nowrap; }
+.docx-font .d-docx-font { flex: 1 1 auto; min-width: 0; }
 
 .r-lock .i-unlocked { display: none; }
 .r-lock[aria-pressed="false"] .i-locked { display: none; }
@@ -630,19 +681,74 @@ fieldset.field > legend { padding: 0; margin-bottom: 8px; }
   color: var(--overlay-fg);
   cursor: pointer;
 }
-.compare-full:hover { border-color: var(--overlay-fg); }
+@media (hover: hover) { .compare-full:hover { border-color: var(--overlay-fg); } }
 .compare-full svg { width: 18px; height: 18px; }
 
 .preview-foot { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 10px; }
 .preview-stats { margin: 0; text-align: center; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .preview-stats.is-error { color: var(--danger); }
 
+/* ---------- crop: box over the picture (js/ui/crop.js) ---------- */
+
+.crop-row { flex-wrap: nowrap; }
+.crop-row .select { flex: 1 1 auto; min-width: 0; }
+.crop-host { display: flex; justify-content: center; }
+.crop { position: relative; overflow: hidden; border-radius: var(--radius); touch-action: none; user-select: none; -webkit-user-select: none; cursor: crosshair; }
+.crop-pic { display: block; width: 100%; height: 100%; }
+/* Outside the box is dimmed; thin lines split the box in thirds. */
+.crop-box {
+  position: absolute;
+  outline: var(--line) solid var(--overlay-fg);
+  box-shadow: 0 0 0 100vmax var(--overlay);
+  background: linear-gradient(to right, transparent calc(33.33% - 1px), var(--overlay-line) 0 33.33%, transparent 0 calc(66.67% - 1px), var(--overlay-line) 0 66.67%, transparent 0),
+    linear-gradient(to bottom, transparent calc(33.33% - 1px), var(--overlay-line) 0 33.33%, transparent 0 calc(66.67% - 1px), var(--overlay-line) 0 66.67%, transparent 0);
+  cursor: move;
+}
+.crop-box:focus-visible { outline: 2px solid var(--overlay-fg); outline-offset: 0; }
+/* Handles sit just inside the corners, so they stay whole when the box touches the picture's edge. */
+.crop-handle { position: absolute; width: 18px; height: 18px; margin: 2px; border: var(--line) solid var(--overlay-line); border-radius: 50%; background: var(--divider); }
+.crop-handle[data-h="nw"] { left: 0; top: 0; cursor: nwse-resize; }
+.crop-handle[data-h="ne"] { right: 0; top: 0; cursor: nesw-resize; }
+.crop-handle[data-h="sw"] { left: 0; bottom: 0; cursor: nesw-resize; }
+.crop-handle[data-h="se"] { right: 0; bottom: 0; cursor: nwse-resize; }
+@media (pointer: coarse) { .crop-handle { width: 28px; height: 28px; } }   /* big enough for a finger */
+
+/* ---------- video: player and trim ---------- */
+
+.panel-video { min-width: 0; }
+.v-stage { display: flex; justify-content: center; overflow: hidden; border-radius: var(--radius); background: var(--divider); }
+.v-player, .v-anim { display: block; max-width: 100%; max-height: min(60vh, 560px); max-height: min(60svh, 560px); }
+.v-player { width: 100%; }
+/* Sound only: just the player's controls, no black picture area. */
+.v-stage.is-audio { background: none; }
+.v-player.is-audio { height: 54px; }
+.fades { flex-wrap: nowrap; }
+.fades .select { flex: 1 1 0; min-width: 0; }
+
+/* Two handles on one rail: start and end of the part to keep. The rail is inset by half a
+   handle, so the handles' centres line up with its ends. */
+.trim { margin-top: 10px; }
+.trim-bar { position: relative; height: var(--control-h); }
+.trim-rail { position: absolute; top: 50%; left: 10px; right: 10px; height: 10px; margin-top: -5px; border: var(--line) solid var(--border); border-radius: 999px; background: var(--bg); }
+.trim-sel { position: absolute; top: -2px; bottom: -2px; left: calc(var(--a, 0) * 100%); right: calc((1 - var(--b, 1)) * 100%); border-radius: 999px; background: var(--accent); }
+.trim input[type="range"] { position: absolute; inset: 0; pointer-events: none; }
+.trim input[type="range"]::-webkit-slider-runnable-track { border: 0; background: none; }
+.trim input[type="range"]::-webkit-slider-thumb { margin-top: -5px; pointer-events: auto; }
+.trim input[type="range"]::-moz-range-track { border: 0; background: none; }
+.trim input[type="range"]::-moz-range-progress { background: none; }
+.trim input[type="range"]::-moz-range-thumb { pointer-events: auto; }
+.trim-times { text-align: center; font-variant-numeric: tabular-nums; }
+
 /* ---------- documents: original and result ---------- */
 
 .panel-doc { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
 @container (min-width: 720px) { .panel-doc { grid-template-columns: 1fr 1fr; } }
 .doc-pane { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.doc-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.doc-head { display: flex; align-items: center; gap: 8px; min-height: 30px; }
+.doc-head .hint { margin-left: auto; text-align: right; }
+/* Page / Code / Table switch above the original and the result. */
+.segmented.is-small { height: 30px; padding: 2px; border-radius: 10px; }
+.segmented.is-small span { padding: 0 10px; border-radius: 7px; font-size: 12px; }
 .doc-box {
   width: 100%;
   height: var(--doc-h, 320px);
@@ -687,7 +793,9 @@ fieldset.field > legend { padding: 0; margin-bottom: 8px; }
   touch-action: none;
 }
 .doc-grip span { width: 56px; height: 4px; border-radius: 2px; background: var(--border); transition: background-color var(--fast); }
-.doc-grip:hover span, .doc-grip:focus-visible span { background: var(--muted); }
+.doc-grip:focus-visible span { background: var(--muted); }
+@media (hover: hover) { .doc-grip:hover span { background: var(--muted); } }
+@media (pointer: coarse) { .doc-grip { height: 28px; } }   /* big enough for a finger */
 .doc-grip:focus-visible { outline-offset: 0; }
 .doc-box pre { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
 .doc-box table { border-collapse: collapse; font-family: var(--font); }
@@ -722,8 +830,8 @@ fieldset.field > legend { padding: 0; margin-bottom: 8px; }
   font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
-.zoom-group button:hover:not(:disabled) { background: var(--surface-2); }
-.zoom-group button:disabled { opacity: .4; cursor: default; }
+@media (hover: hover) { .zoom-group button:hover:not(:disabled) { background: var(--surface-2); } }
+.zoom-group button:disabled { opacity: .5; cursor: default; }
 .zoom-group .zoom-level { min-width: 52px; }
 .zoom-group svg { width: 16px; height: 16px; }
 
@@ -765,6 +873,12 @@ fieldset.field > legend { padding: 0; margin-bottom: 8px; }
   .file { padding-left: 14px; }
   .viewer { padding: 12px; }
   .viewer-hint { display: none; }
+  .drop.is-compact .drop-sub { display: none; }   /* the format list once files are in: room for them */
+}
+
+/* iPhone zooms the page into any field with text under 16px when it's tapped. */
+@supports (-webkit-touch-callout: none) {
+  .select, .input, .doc-src { font-size: 16px; }
 }
 
 /* ---------- colour picker pop-up (js/ui/colorpicker.js) ---------- */
@@ -815,7 +929,7 @@ fieldset.field > legend { padding: 0; margin-bottom: 8px; }
 .cpick-hex { flex: 1 1 auto; width: auto; min-width: 0; font-family: ui-monospace, Consolas, monospace; }
 .cpick-recent { display: flex; flex-wrap: wrap; gap: 6px; }
 .cpick-swatch { width: 26px; height: 26px; padding: 0; border: var(--line) solid var(--border); border-radius: 8px; cursor: pointer; }
-.cpick-swatch:hover { border-color: var(--muted); }
+@media (hover: hover) { .cpick-swatch:hover { border-color: var(--muted); } }
 
 /* ---------- motion: short and quiet; all of it is off with "reduce motion" ---------- */
 

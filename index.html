@@ -18,9 +18,15 @@
 <script defer src="js/formats.js"></script>
 <script defer src="js/convert/zip.js"></script>
 <script defer src="js/convert/bmp.js"></script>
+<script defer src="js/convert/tiff.js"></script>
+<script defer src="js/convert/codecs.js"></script>
 <script defer src="js/convert/ico.js"></script>
 <script defer src="js/convert/image.js"></script>
+<script defer src="js/convert/markup.js"></script>
+<script defer src="js/convert/doc.js"></script>
+<script defer src="js/convert/docx.js"></script>
 <script defer src="js/convert/data.js"></script>
+<script defer src="js/convert/video.js"></script>
 <script defer src="js/convert/jobs.js"></script>
 <!-- Page-only modules. -->
 <script defer src="js/pool.js"></script>
@@ -28,6 +34,7 @@
 <script defer src="js/ui/colorpicker.js"></script>
 <script defer src="js/ui/theme.js"></script>
 <script defer src="js/ui/preview.js"></script>
+<script defer src="js/ui/crop.js"></script>
 <script defer src="js/ui/panel.js"></script>
 <script defer src="js/app.js"></script>
 </head>
@@ -57,8 +64,8 @@
 
     <button id="drop" class="drop" type="button">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M7 9l5-5 5 5M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>
-      <span class="drop-title">Drop or paste files here, or click to choose.</span>
-      <span class="drop-sub">JPG · PNG · WebP · GIF · BMP · ICO · CSV · JSON · XLSX · TXT · Markdown</span>
+      <span class="drop-title"><span class="drop-mouse">Drop or paste files here, or click to choose.</span><span class="drop-touch">Tap to choose files.</span></span>
+      <span class="drop-sub">Images: JPG · PNG · HEIC · RAW · PSD · WebP · AVIF · GIF · TIFF · SVG · TGA · BMP · ICO · and more<br>Video: MP4 · MOV · WebM · MKV · TS · 3GP · Audio: MP3 · M4A · WAV · FLAC · OGG · Opus · AAC<br>Tables and data: CSV · TSV · XLSX · XLS · ODS · JSON · YAML · XML<br>Documents: Word · HTML · Markdown · TXT</span>
     </button>
     <input id="file-input" type="file" multiple hidden>
   </div>
@@ -110,7 +117,8 @@
           <button type="button" class="btn btn-quiet reset">Reset</button>
         </div>
         <button type="button" class="icon-btn panel-close" aria-label="Hide settings" title="Hide settings">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          <svg class="i-up" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>
+          <svg class="i-x" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
         </button>
       </div>
       <div class="head-confirm" hidden>
@@ -133,6 +141,90 @@
           <div class="field" data-morph="f-target">
             <span class="field-label">Convert to</span>
             <select class="select p-target" aria-label="Convert to"></select>
+          </div>
+
+          <!-- Data and document files: each field shows only where it matters (QC.data.settingsFor). -->
+          <div class="field" data-doc data-show="encoding" data-morph="f-encoding" hidden>
+            <span class="field-label">Encoding</span>
+            <select class="select d-encoding" aria-label="Text encoding of the file">
+              <option value="auto">Auto-detect</option>
+              <option value="utf-8">UTF-8</option>
+              <option value="utf-16le">UTF-16</option>
+              <option value="windows-1251">Windows-1251 (Cyrillic)</option>
+              <option value="windows-1252">Windows-1252 (Western)</option>
+            </select>
+            <p class="hint d-encoding-note" data-morph="encoding-note" hidden></p>
+          </div>
+
+          <div class="field" data-doc data-show="delimiter" data-morph="f-delimiter" hidden>
+            <span class="field-label">Separator in the file</span>
+            <select class="select d-delimiter" aria-label="Separator in the file">
+              <option value="auto">Auto-detect</option>
+              <option value=",">Comma ,</option>
+              <option value=";">Semicolon ;</option>
+              <option value="&#9;">Tab</option>
+              <option value="|">Pipe |</option>
+            </select>
+            <p class="hint d-delimiter-note" data-morph="delimiter-note" hidden></p>
+          </div>
+
+          <div class="field" data-doc data-show="sheet" data-morph="f-sheet" hidden>
+            <span class="field-label">Sheet</span>
+            <select class="select d-sheet" aria-label="Sheet"></select>
+          </div>
+
+          <div class="field" data-doc data-show="table" data-morph="f-table" hidden>
+            <span class="field-label">Table on the page</span>
+            <select class="select d-table" aria-label="Table on the page"></select>
+          </div>
+
+          <fieldset class="field" data-doc data-show="csvDelimiter" data-morph="f-csv" hidden>
+            <legend class="field-label">Separator</legend>
+            <div class="segmented">
+              <label><input type="radio" class="d-csv" value=","><span>Comma</span></label>
+              <label><input type="radio" class="d-csv" value=";"><span>Semicolon</span></label>
+            </div>
+            <p class="hint">Excel set to many European languages expects semicolons.</p>
+          </fieldset>
+
+          <fieldset class="field" data-doc data-show="indent" data-morph="f-indent" hidden>
+            <legend class="field-label">Indent</legend>
+            <div class="segmented">
+              <label><input type="radio" class="d-indent" value="2"><span>2 spaces</span></label>
+              <label><input type="radio" class="d-indent" value="4"><span>4</span></label>
+              <label data-indent-all><input type="radio" class="d-indent" value="tab"><span>Tab</span></label>
+              <label data-indent-all><input type="radio" class="d-indent" value="min"><span>Minify</span></label>
+            </div>
+          </fieldset>
+
+          <fieldset class="field" data-doc data-show="layout" data-morph="f-layout" hidden>
+            <legend class="field-label">Show data as</legend>
+            <div class="segmented">
+              <label><input type="radio" class="d-layout" value="auto"><span>Auto</span></label>
+              <label><input type="radio" class="d-layout" value="table"><span>Table</span></label>
+              <label><input type="radio" class="d-layout" value="list"><span>List</span></label>
+            </div>
+          </fieldset>
+
+          <div class="field" data-doc data-show="docx" data-morph="f-docx" hidden>
+            <span class="field-label">Font</span>
+            <div class="inline docx-font">
+              <select class="select d-docx-font" aria-label="Font of the Word document"></select>
+              <select class="select d-docx-size" aria-label="Font size in points">
+                <option value="10">10 pt</option><option value="11">11 pt</option><option value="12">12 pt</option><option value="14">14 pt</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="field" data-doc data-show="options" data-morph="f-options" hidden>
+            <span class="field-label">Options</span>
+            <div class="checks">
+              <label class="check" data-check="header"><input type="checkbox" class="d-header"><span>First row is the header</span></label>
+              <label class="check" data-check="types"><input type="checkbox" class="d-types"><span>Read numbers as numbers</span></label>
+              <label class="check" data-check="mainOnly"><input type="checkbox" class="d-main"><span>Main content only <span class="muted">(no menus, headers, footers)</span></span></label>
+              <label class="check" data-check="bom"><input type="checkbox" class="d-bom"><span>Excel-friendly <span class="muted">(UTF-8 BOM)</span></span></label>
+              <label class="check" data-check="sortKeys"><input type="checkbox" class="d-sort"><span>Sort keys A–Z</span></label>
+            </div>
           </div>
 
           <!-- HTML output only: page background (text colour follows) and font. -->
@@ -198,6 +290,26 @@
             <p class="hint bg-hint"></p>
           </fieldset>
 
+          <div class="field" data-image data-morph="f-crop">
+            <span class="field-label">Crop</span>
+            <div class="inline crop-row">
+              <select class="select c-ratio" aria-label="Crop shape">
+                <option value="none">No crop</option>
+                <option value="free">Free</option>
+                <option value="orig">Original shape</option>
+                <option value="1:1">Square (1:1)</option>
+                <option value="4:3">4:3</option>
+                <option value="3:2">3:2</option>
+                <option value="16:9">16:9</option>
+                <option value="3:4">3:4 (tall)</option>
+                <option value="2:3">2:3 (tall)</option>
+                <option value="9:16">9:16 (tall)</option>
+              </select>
+              <button type="button" class="btn c-edit" hidden>Edit</button>
+            </div>
+            <p class="hint c-hint" data-morph="c-hint" hidden>Drag the box or a corner on the picture, or drag outside it to draw a new box.</p>
+          </div>
+
           <fieldset class="field" data-image data-morph="f-resize">
             <legend class="field-label">Resize</legend>
             <div class="segmented">
@@ -221,6 +333,80 @@
             <p class="hint r-info"></p>
           </fieldset>
 
+          <!-- Video (and GIF to video). -->
+          <fieldset class="field" data-video data-morph="f-vquality" hidden>
+            <legend class="field-label">Quality</legend>
+            <div class="segmented">
+              <label class="v-keep"><input type="radio" class="v-quality" value="keep"><span>Keep</span></label>
+              <label><input type="radio" class="v-quality" value="high"><span>High</span></label>
+              <label><input type="radio" class="v-quality" value="medium"><span>Medium</span></label>
+              <label><input type="radio" class="v-quality" value="low"><span>Low</span></label>
+            </div>
+            <p class="hint v-quality-hint"></p>
+          </fieldset>
+
+          <div class="field" data-video data-morph="f-vsize" hidden>
+            <span class="field-label">Size</span>
+            <select class="select v-height" aria-label="Video size">
+              <option value="auto">Auto</option>
+              <option value="1080">1080p</option>
+              <option value="720">720p</option>
+              <option value="480">480p</option>
+              <option value="360">360p</option>
+              <option value="240">240p</option>
+            </select>
+          </div>
+
+          <div class="field" data-video data-morph="f-vfps" hidden>
+            <span class="field-label">Frame rate</span>
+            <select class="select v-fps" aria-label="Frame rate">
+              <option value="auto">Auto</option>
+              <option value="60">60 fps</option>
+              <option value="30">30 fps</option>
+              <option value="24">24 fps</option>
+              <option value="15">15 fps</option>
+              <option value="10">10 fps</option>
+            </select>
+          </div>
+
+          <div class="field" data-video data-morph="f-volume" hidden>
+            <span class="field-label">Volume</span>
+            <div class="q-row">
+              <input type="range" class="v-vol" min="0" max="200" step="5" aria-label="Volume">
+              <input type="number" class="input q-num v-vol-num" min="0" max="200" step="1" inputmode="numeric" aria-label="Volume in percent, 0 to 200">
+            </div>
+            <p class="hint v-vol-hint" data-morph="vol-hint" hidden></p>
+          </div>
+
+          <fieldset class="field" data-video data-morph="f-channels" hidden>
+            <legend class="field-label">Channels</legend>
+            <div class="segmented">
+              <label><input type="radio" class="v-ch" value="auto"><span>Auto</span></label>
+              <label><input type="radio" class="v-ch" value="2"><span>Stereo</span></label>
+              <label><input type="radio" class="v-ch" value="1"><span>Mono</span></label>
+            </div>
+          </fieldset>
+
+          <div class="field" data-video data-morph="f-rate" hidden>
+            <span class="field-label">Sample rate</span>
+            <select class="select v-rate" aria-label="Sample rate">
+              <option value="auto">Auto (original)</option>
+              <option value="48000">48 kHz</option>
+              <option value="44100">44.1 kHz</option>
+              <option value="32000">32 kHz</option>
+              <option value="22050">22.05 kHz</option>
+              <option value="16000">16 kHz (speech)</option>
+            </select>
+          </div>
+
+          <div class="field" data-video data-morph="f-fade" hidden>
+            <span class="field-label">Fade</span>
+            <div class="inline fades">
+              <select class="select v-fade-in" aria-label="Fade in"><option value="0">No fade in</option><option value="0.5">Fade in 0.5 s</option><option value="1">Fade in 1 s</option><option value="2">Fade in 2 s</option><option value="3">Fade in 3 s</option><option value="5">Fade in 5 s</option></select>
+              <select class="select v-fade-out" aria-label="Fade out"><option value="0">No fade out</option><option value="0.5">Fade out 0.5 s</option><option value="1">Fade out 1 s</option><option value="2">Fade out 2 s</option><option value="3">Fade out 3 s</option><option value="5">Fade out 5 s</option></select>
+            </div>
+          </div>
+
           <div class="field" data-image data-morph="f-resample">
             <span class="field-label">Resampling</span>
             <select class="select rs" aria-label="Resampling" title="Used when enlarging and when shrinking. &quot;High&quot; is the browser's best filter (bicubic or similar, depends on the browser).">
@@ -233,6 +419,7 @@
       </div>
 
       <div class="panel-preview" data-image data-morph="preview">
+        <div class="crop-host" hidden></div>
         <div class="preview-host"></div>
         <div class="preview-foot">
           <div class="zoom-slot"></div>
@@ -240,14 +427,33 @@
         </div>
       </div>
 
+      <div class="panel-video" data-video data-morph="vpreview" hidden>
+        <div class="v-stage">
+          <video class="v-player" controls playsinline preload="metadata"></video>
+          <img class="v-anim" alt="Animation" hidden>
+        </div>
+        <div class="trim" data-morph="trim" hidden>
+          <div class="trim-bar">
+            <div class="trim-rail"><span class="trim-sel"></span></div>
+            <input type="range" class="trim-start" min="0" step="0.05" aria-label="Trim: start">
+            <input type="range" class="trim-end" min="0" step="0.05" aria-label="Trim: end">
+          </div>
+          <p class="hint trim-times"></p>
+        </div>
+        <div class="preview-foot">
+          <span class="segmented is-small view-toggle v-views" role="radiogroup" aria-label="Show" hidden></span>
+          <p class="preview-stats v-stats" aria-live="polite"></p>
+        </div>
+      </div>
+
       <div class="panel-doc" data-doc data-morph="doc">
         <div class="doc-pane">
-          <div class="doc-head"><span class="field-label">Original</span><span class="hint doc-src-note"></span></div>
+          <div class="doc-head"><span class="field-label">Original</span><span class="segmented is-small view-toggle src-views" role="radiogroup" aria-label="Show the original as" hidden></span><span class="hint doc-src-note"></span></div>
           <div class="doc-edit doc-box"><textarea class="doc-src" spellcheck="false" aria-label="Original content"></textarea></div>
           <div class="doc-src-view doc-box" hidden></div>
         </div>
         <div class="doc-pane">
-          <div class="doc-head"><span class="field-label">Result</span><span class="hint doc-out-note" aria-live="polite"></span></div>
+          <div class="doc-head"><span class="field-label">Result</span><span class="segmented is-small view-toggle out-views" role="radiogroup" aria-label="Show the result as" hidden></span><span class="hint doc-out-note" aria-live="polite"></span></div>
           <div class="doc-out doc-box"></div>
         </div>
         <div class="doc-grip" role="separator" aria-orientation="horizontal" aria-label="Height of the text boxes" title="Drag to resize both boxes" tabindex="0"><span></span></div>

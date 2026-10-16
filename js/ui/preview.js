@@ -96,6 +96,7 @@ QC.define('preview', function (QC) {
     function layout() {
       var n = natural();
       if (!n || destroyed) return;
+      if (!full && !host.clientWidth) return;          // hidden (crop editor on top): sized again once shown
       var availW, availH;
       if (full) {
         var stage = viewer.querySelector('.viewer-stage'); // fills the space above the bar
@@ -434,6 +435,19 @@ QC.define('preview', function (QC) {
       }, function () { /* keep the previous result */ });
     }
 
+    // The result on show has another shape than the one on its way: show the original alone meanwhile.
+    function clearResult() {
+      if (!res) return;
+      resToken++;                                      // a decode still in flight belongs to the old settings
+      free(res);
+      res = null;
+      resW = resH = 0;
+      grow = true;
+      layout();
+    }
+
+    function resultAspect() { return res ? resW / resH : 0; }
+
     var ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(function () { if (!full) layout(); }) : null;
     if (ro) ro.observe(host);
     window.addEventListener('resize', layout);
@@ -464,7 +478,8 @@ QC.define('preview', function (QC) {
 
     renderFullButton();
     renderZoom();
-    return { setOriginal: setOriginal, setResult: setResult, layout: layout, picture: picture, destroy: destroy };
+    return { setOriginal: setOriginal, setResult: setResult, clearResult: clearResult, resultAspect: resultAspect,
+      layout: layout, picture: picture, destroy: destroy };
   }
 
   return { create: create, screenHeight: screenHeight };

@@ -1,17 +1,78 @@
 /*
- * Data conversions: CSV <-> JSON <-> XLSX, TXT -> HTML, Markdown -> HTML/TXT.
- * CSV is parsed by hand. SheetJS (XLSX) and marked (Markdown) load only when needed.
+ * Conversions between data and document files. Every input is read into one of three shapes,
+ * and every output is written from one of them:
+ *   table  rows of cells (sheets)   CSV, TSV, XLSX, ODS, XLS, tables in an HTML page
+ *   value  any JSON value           JSON, YAML, XML
+ *   doc    the document model       TXT, Markdown, HTML, DOCX (js/convert/doc.js, docx.js)
+ * Shapes convert into each other (a table becomes a list of objects, a value becomes a table
+ * or a list, a table goes into a document), so any listed input reaches any listed output.
+ * CSV and XML are handled here; SheetJS, js-yaml and marked load only when needed.
  */
 QC.define('data', function (QC) {
   'use strict';
 
   var PREVIEW_ROWS = 200;
+  var MAX_PREVIEW_HTML = 4e6;   // bigger pages are shown as code only
+
+  function set(words) {
+    var o = Object.create(null);
+    words.split(' ').forEach(function (w) { o[w] = true; });
+    return o;
+  }
+
+  var TABLE_IN = set('csv tsv xlsx ods xls'), SHEET_IN = set('xlsx ods xls'), VALUE_IN = set('json yaml xml');
+  var TEXT_IN = set('csv tsv json yaml xml txt md html');
+  var TABLE_OUT = set('csv tsv xlsx ods'), VALUE_OUT = set('json yaml xml'), DOC_OUT = set('html md txt docx');
+
+  // Per-file settings for data and document files (item.doc on the page).
+  function defaults() {
+    return {
+      encoding: 'auto',       // text files: auto | utf-8 | utf-16le | windows-1251 | windows-1252
+      delimiter: 'auto',      // CSV input: auto | , | ; | \t | |
+      sheet: 0,               // spreadsheets: sheet index, or 'all'
+      table: 0,               // HTML page -> table output: which table
+      header: true,           // first row holds the column names
+      types: true,            // text tables: "42" becomes the number 42
+      mainOnly: false,        // HTML page -> document: skip menus, headers, footers
+      csvDelimiter: ',',      // CSV output
+      bom: true,              // CSV/TSV output starts with a UTF-8 BOM, so Excel reads it right
+      indent: '2',            // JSON/YAML/XML output: 2 | 4 | tab | min
+      sortKeys: false,        // JSON/YAML/XML output from data
+      layout: 'auto',         // data -> HTML/Markdown: auto | table | list
+      docxFont: 'Calibri',
+      docxSize: '11'
+    };
+  }
+
+  // Which settings matter for a conversion; the panel shows only these.
+  function settingsFor(from, to) {
+    var pageTables = from === 'html' && !!(TABLE_OUT[to] || VALUE_OUT[to]);
+    var textTable = from === 'csv' || from === 'tsv' || pageTables;
+    return {
+      encoding: !!TEXT_IN[from],
+      delimiter: from === 'csv',
+      sheet: !!SHEET_IN[from],
+      sheetAll: !!SHEET_IN[from] && to !== 'csv' && to !== 'tsv',
+      table: pageTables,
+      header: !!(TABLE_IN[from] || pageTables) && to !== 'csv' && to !== 'tsv',
+      types: textTable && !!(VALUE_OUT[to] || to === 'xlsx' || to === 'ods'),
+      mainOnly: from === 'html' && !!DOC_OUT[to],
+      csvDelimiter: to === 'csv',
+      bom: to === 'csv' || to === 'tsv',
+      indent: !!VALUE_OUT[to],
+      indentAll: !!VALUE_OUT[to] && to !== 'yaml',      // YAML can't use tabs or be minified
+      sortKeys: !!VALUE_OUT[to] && !!VALUE_IN[from],
+      layout: !!VALUE_IN[from] && (to === 'html' || to === 'md'),
+      page: to === 'html',
+      docx: to === 'docx'
+    };
+  }
 
   /* ---------- CSV ---------- */
 
-  // Pick the most frequent of , ; TAB in the first line (outside quotes).
+  // Pick the most frequent of , ; TAB | in the first line (outside quotes).
   function detectDelimiter(text) {
-    var counts = { ',': 0, ';': 0, '\t': 0 }, inQuotes = false;
+    var counts = { ',': 0, ';': 0, '\t': 0, '|': 0 }, inQuotes = false;
     for (var i = 0; i < text.length && i < 65536; i++) {
       var c = text[i];
       if (c === '"') inQuotes = !inQuotes;
@@ -19,8 +80,7 @@ QC.define('data', function (QC) {
       else if (!inQuotes && c in counts) counts[c]++;
     }
     var best = ',';
-    if (counts[';'] > counts[best]) best = ';';
-    if (counts['\t'] > counts[best]) best = '\t';
+    [';', '\t', '|'].forEach(function (d) { if (counts[d] > counts[best]) best = d; });
     return best;
   }
 
@@ -70,21 +130,26 @@ QC.define('data', function (QC) {
     return rows;
   }
 
-  function csvCell(v) {
+  function cellText(v) {
     if (v === null || v === undefined) return '';
-    if (v instanceof Date) v = dateText(v);
-    else if (typeof v === 'object') v = JSON.stringify(v);
-    var s = String(v);
-    return /[",\r\n]|^\s|\s$/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    if (v instanceof Date) return dateText(v);
+    return typeof v === 'object' ? JSON.stringify(v) : String(v);
   }
 
-  function toCSV(rows) {
+  function toCSV(rows, delim) {
+    delim = delim || ',';
+    var special = new RegExp('["\\r\\n' + (delim === '\t' ? '\\t' : delim === '|' ? '\\|' : delim) + ']|^\\s|\\s$');
     var lines = new Array(rows.length);
-    for (var r = 0; r < rows.length; r++) lines[r] = rows[r].map(csvCell).join(',');
+    for (var r = 0; r < rows.length; r++) {
+      lines[r] = rows[r].map(function (v) {
+        var s = cellText(v);
+        return special.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+      }).join(delim);
+    }
     return lines.length ? lines.join('\r\n') + '\r\n' : '';
   }
 
-  /* ---------- tables ---------- */
+  /* ---------- tables and values ---------- */
 
   // "42" -> 42, but "007", "1.50", "1e3", " 1" stay strings so nothing changes on the way back.
   function inferValue(s) {
@@ -125,19 +190,41 @@ QC.define('data', function (QC) {
     return out;
   }
 
-  function isObject(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
+  function rowsToValue(rows, header, infer) {
+    if (header) return rowsToObjects(rows, infer);
+    return infer ? rows.map(function (r) { return r.map(inferValue); }) : rows;
+  }
+
+  function isObject(v) { return v !== null && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Date); }
+
+  // { "data": { "items": [...] } } -> the array inside. XML attributes ("@id") don't count as keys.
+  // loose (for tables): also the one list of records next to other keys, e.g. { "page": 1, "users": [{...}] }.
+  function records(value, loose) {
+    for (var depth = 0; depth < 8 && isObject(value); depth++) {
+      var keys = Object.keys(value).filter(function (k) { return k[0] !== '@'; });
+      if (loose && keys.length > 1) {
+        var lists = keys.filter(function (k) { var v = value[k]; return Array.isArray(v) && v.length && v.every(isObject); });
+        if (lists.length === 1) return value[lists[0]];
+      }
+      if (keys.length !== 1) break;
+      var inner = value[keys[0]];
+      if (Array.isArray(inner)) return inner;
+      if (!isObject(inner)) break;
+      value = inner;
+    }
+    return value;
+  }
 
   function jsonCell(v) {
     if (v === null || v === undefined) return '';
+    if (v instanceof Date) return v.toISOString();
     return typeof v === 'object' ? JSON.stringify(v) : v;
   }
 
-  // Any JSON value -> rows. Arrays of objects get a header row (union of keys, first-seen order).
+  // Any value -> rows. Arrays of objects get a header row (union of keys, first-seen order).
   function jsonToRows(value) {
-    if (isObject(value)) {
-      var keys = Object.keys(value);
-      value = keys.length === 1 && Array.isArray(value[keys[0]]) ? value[keys[0]] : [value]; // { "data": [...] }
-    }
+    value = records(value, true);
+    if (isObject(value)) value = [value];
     if (!Array.isArray(value)) value = [value];
     if (value.length && value.every(Array.isArray)) {
       return value.map(function (r) { return r.map(jsonCell); });
@@ -159,8 +246,12 @@ QC.define('data', function (QC) {
     return rows;
   }
 
-  function inferRows(rows) {
-    return rows.map(function (r, i) { return i === 0 ? r : r.map(inferValue); }); // keep header as text
+  function sortKeys(v) {
+    if (Array.isArray(v)) return v.map(sortKeys);
+    if (!isObject(v)) return v;
+    var out = Object.create(null);
+    Object.keys(v).sort(function (a, b) { return a.localeCompare(b); }).forEach(function (k) { out[k] = sortKeys(v[k]); });
+    return out;
   }
 
   function pad(n) { return (n < 10 ? '0' : '') + n; }
@@ -171,201 +262,352 @@ QC.define('data', function (QC) {
     return s;
   }
 
-  /* ---------- XLSX (SheetJS) ---------- */
+  function scalar(v) {
+    if (v === null || v === undefined) return '';
+    return v instanceof Date ? v.toISOString() : String(v);
+  }
 
-  async function sheetjs() {
-    await QC.loadScript(QC.libs.xlsx);
+  /* ---------- JSON, YAML ---------- */
+
+  // Also reads JSON Lines (one value per line).
+  function parseJSON(text) {
+    try { return JSON.parse(text); }
+    catch (e) {
+      var lines = text.split(/\r?\n/).filter(function (l) { return l.trim(); });
+      if (lines.length > 1) {
+        try { return lines.map(function (l) { return JSON.parse(l); }); } catch (e2) { /* not JSON Lines either */ }
+      }
+      throw QC.error('decode', 'Not valid JSON (' + String(e.message || '').replace(/^JSON\.parse: /, '').slice(0, 120) + ').');
+    }
+  }
+
+  function indentUnit(indent) { return indent === 'tab' ? '\t' : indent === 'min' ? '' : indent === '4' ? '    ' : '  '; }
+
+  function toJSON(value, indent) {
+    var unit = indentUnit(indent);
+    return JSON.stringify(value, null, unit) + (unit ? '\n' : '');
+  }
+
+  async function yaml() {
+    await QC.loadScript(QC.libs.yaml);
+    return self.jsyaml;
+  }
+
+  async function parseYaml(text) {
+    var Y = await yaml();
+    try {
+      var docs = Y.loadAll(text);
+      return docs.length === 1 ? docs[0] : docs;     // several "---" documents become a list
+    } catch (e) {
+      throw QC.error('decode', 'Not valid YAML' + (e.mark ? ' (line ' + (e.mark.line + 1) + ')' : '') + '.');
+    }
+  }
+
+  async function toYaml(value, indent) {
+    var Y = await yaml();
+    return Y.dump(value, { indent: indent === '4' ? 4 : 2, lineWidth: -1, noRefs: true });
+  }
+
+  /* ---------- XML ---------- */
+
+  // <a id="1"><b>x</b><b>y</b></a> -> { a: { "@id": "1", b: ["x", "y"] } }
+  function xmlToValue(text) {
+    var M = QC.markup, tree = M.parseXml(text);
+    var root = tree.children.find(function (c) { return c.name !== undefined; });
+    if (!root) throw QC.error('decode', 'Not valid XML (no root element).');
+    function node(el) {
+      var obj = Object.create(null), many = Object.create(null), attrs = 0, kids = 0, texts = '';
+      Object.keys(el.attrs).forEach(function (k) {
+        if (k === 'xmlns' || k.indexOf('xmlns:') === 0) return;
+        obj['@' + k] = el.attrs[k];
+        attrs++;
+      });
+      el.children.forEach(function (c) {
+        if (c.name === undefined) { texts += c.text; return; }
+        kids++;
+        var v = node(c);
+        if (c.name in obj) {
+          if (!many[c.name]) { obj[c.name] = [obj[c.name]]; many[c.name] = true; }
+          obj[c.name].push(v);
+        } else obj[c.name] = v;
+      });
+      var t = texts.trim();
+      if (!kids && !attrs) return t;
+      if (t) obj['#text'] = t;
+      return obj;
+    }
+    var out = Object.create(null);
+    out[root.name] = node(root);
+    return out;
+  }
+
+  function xmlName(n) {
+    n = String(n).replace(/[^\p{L}\p{N}_.:-]/gu, '_');
+    return /^[\p{L}_]/u.test(n) ? n : '_' + n;
+  }
+
+  function valueToXml(value, indent, itemName) {
+    var x = QC.markup.escapeXml, unit = indentUnit(indent), nl = unit ? '\n' : '';
+    var rootName = 'root', content = value;
+    if (isObject(value)) {
+      var keys = Object.keys(value);
+      if (keys.length === 1 && keys[0][0] !== '@' && keys[0] !== '#text' && !Array.isArray(value[keys[0]])) {
+        rootName = keys[0];
+        content = value[keys[0]];
+      }
+    }
+    if (Array.isArray(content)) { var wrap = Object.create(null); wrap[itemName || 'item'] = content; content = wrap; }
+    function repeat(d) { return new Array(d + 1).join(unit); }
+    function el(name, v, depth) {
+      if (Array.isArray(v)) return v.map(function (item) { return el(name, item, depth); }).filter(Boolean).join(nl);
+      var tag = xmlName(name), padding = repeat(depth);
+      if (v === null || v === undefined || v === '') return padding + '<' + tag + '/>';
+      if (!isObject(v)) return padding + '<' + tag + '>' + x(scalar(v)) + '</' + tag + '>';
+      var attrs = '', kids = [], text = '';
+      Object.keys(v).forEach(function (k) {
+        var val = v[k];
+        if (k[0] === '@' && !isObject(val) && !Array.isArray(val)) attrs += ' ' + xmlName(k.slice(1)) + '="' + x(scalar(val)) + '"';
+        else if (k === '#text') text = x(scalar(val));
+        else { var child = el(k, val, depth + 1); if (child) kids.push(child); }
+      });
+      if (!kids.length) return padding + '<' + tag + attrs + (text ? '>' + text + '</' + tag + '>' : '/>');
+      return padding + '<' + tag + attrs + '>' + (text ? nl + repeat(depth + 1) + text : '') + nl + kids.join(nl) + nl + padding + '</' + tag + '>';
+    }
+    return '<?xml version="1.0" encoding="UTF-8"?>' + nl + el(rootName, content, 0) + nl;
+  }
+
+  /* ---------- spreadsheets (SheetJS) ---------- */
+
+  // The full build (XLS support) replaces the small one and is never swapped back.
+  async function sheetjs(full) {
+    if (full) await QC.loadScript(QC.libs.xlsxFull);
+    else if (!self.XLSX) await QC.loadScript(QC.libs.xlsx);
     return self.XLSX;
   }
 
-  function writeXlsx(X, rows) {
-    var wb = X.utils.book_new();
-    X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(rows), 'Sheet1');
-    return X.write(wb, { type: 'array', bookType: 'xlsx', compression: true });
-  }
-
-  // First sheet as rows. For CSV: text as Excel shows it, but full-precision numbers.
-  function readXlsx(X, buffer, forCsv) {
-    var wb = X.read(buffer, { type: 'array', cellDates: true, dense: true });
-    var name = wb.SheetNames[0];
-    if (!name) throw QC.error('decode', 'The workbook has no sheets.');
-    var rows = X.utils.sheet_to_json(wb.Sheets[name], forCsv
-      ? { header: 1, raw: false, rawNumbers: true, defval: '', blankrows: false }
-      : { header: 1, raw: true, defval: '', blankrows: false });
-    if (!forCsv) rows = rows.map(function (r) { return r.map(function (v) { return v instanceof Date ? dateText(v) : v; }); });
-    return { rows: rows, sheets: wb.SheetNames.length };
-  }
-
-  /* ---------- text and Markdown ---------- */
-
-  function escapeHtml(s) {
-    return s.replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; });
-  }
-
-  /* ----- page style for HTML output: background, matching text colour, font ----- */
-
-  // Fonts that need no download.
-  var LOCAL_FONTS = {
-    system: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
-    serif: 'Georgia, "Times New Roman", serif',
-    mono: 'ui-monospace, Consolas, "Courier New", monospace'
-  };
-
-  function luminance(hex) {
-    var m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
-    if (!m) return 1;
-    var c = [0, 2, 4].map(function (i) {
-      var v = parseInt(m[1].substr(i, 2), 16) / 255;
-      return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
-    });
-    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-  }
-
-  // Dark or light text, whichever reads better on the background (higher contrast).
-  function textOn(bg) {
-    var l = luminance(bg);
-    var dark = (l + 0.05) / (luminance('#1e1e20') + 0.05), light = (luminance('#e8e8e5') + 0.05) / (l + 0.05);
-    return dark >= light ? '#1e1e20' : '#e8e8e5';
-  }
-
-  // "g:Open Sans" -> Google Fonts family name, or '' for a built-in font.
-  function googleFamily(font) {
-    var name = /^g:([A-Za-z0-9 ]{1,60})$/.exec(font || '');
-    return name ? name[1].trim() : '';
-  }
-
-  function googleFontUrl(name, weights) {
-    return 'https://fonts.googleapis.com/css2?family=' + encodeURIComponent(name).replace(/%20/g, '+') +
-      (weights ? ':wght@400;700' : '') + '&display=swap';
-  }
-
-  // page: { background: '#rrggbb', font: 'system' | 'serif' | 'mono' | 'g:<Google family>', weights }
-  function htmlPage(title, body, page) {
-    page = page || {};
-    var bg = /^#[0-9a-f]{6}$/i.test(page.background || '') ? page.background : '#ffffff';
-    var family = googleFamily(page.font);
-    var stack = family ? '"' + family + '", ' + LOCAL_FONTS.system : LOCAL_FONTS[page.font] || LOCAL_FONTS.system;
-    return '<!doctype html>\n<html>\n<head>\n<meta charset="utf-8">\n' +
-      '<meta name="viewport" content="width=device-width, initial-scale=1">\n' +
-      '<title>' + escapeHtml(title) + '</title>\n' +
-      (family ? '<link rel="stylesheet" href="' + googleFontUrl(family, page.weights) + '">\n' : '') +
-      '<style>body{max-width:46rem;margin:2rem auto;padding:0 1rem;font:16px/1.6 ' + stack + ';' +
-      'background:' + bg + ';color:' + textOn(bg) + '}a{color:inherit}' +
-      'pre,code{font-family:ui-monospace,Consolas,monospace}pre{overflow:auto;padding:1rem;background:rgba(128,128,128,.12)}' +
-      'table{border-collapse:collapse}th,td{border:1px solid rgba(128,128,128,.4);padding:.3rem .6rem}img{max-width:100%}</style>\n' +
-      '</head>\n<body>\n' + body + '\n</body>\n</html>\n';
-  }
-
-  function textToHtml(text) {
-    return text.split(/\r?\n\s*\r?\n/).filter(function (p) { return p.trim(); }).map(function (p) {
-      return '<p>' + escapeHtml(p.trim()).replace(/\r?\n/g, '<br>\n') + '</p>';
-    }).join('\n');
-  }
-
-  async function markdownToHtml(text) {
-    await QC.loadScript(QC.libs.marked);
-    return self.marked.parse(text, { gfm: true });
-  }
-
-  function decodeEntities(s) {
-    var named = { amp: '&', lt: '<', gt: '>', quot: '"', apos: '\'', nbsp: ' ' };
-    return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, function (m, e) {
-      if (e[0] === '#') {
-        var code = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
-        return code > 0 && code < 0x110000 ? String.fromCodePoint(code) : m;
+  // For CSV: text as Excel shows it, but full-precision numbers. Otherwise raw values.
+  function readBook(X, buffer, asText) {
+    var wb;
+    try { wb = X.read(buffer, { type: 'array', cellDates: true, dense: true }); }
+    catch (e) { throw QC.error('decode', 'Could not read this spreadsheet.'); }
+    if (!wb.SheetNames.length) throw QC.error('decode', 'The workbook has no sheets.');
+    return {
+      names: wb.SheetNames.slice(),
+      rows: function (i) {
+        var rows = X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[i]], asText
+          ? { header: 1, raw: false, rawNumbers: true, defval: '', blankrows: false }
+          : { header: 1, raw: true, defval: '', blankrows: false });
+        return asText ? rows : rows.map(function (r) { return r.map(function (v) { return v instanceof Date ? dateText(v) : v; }); });
       }
-      return named[e.toLowerCase()] || m;
+    };
+  }
+
+  function sheetName(name, used) {
+    var base = String(name || 'Sheet').replace(/[\[\]:*?\/\\]/g, ' ').trim().slice(0, 31) || 'Sheet', out = base, k = 1;
+    while (used[out.toLowerCase()]) out = base.slice(0, 26) + ' (' + (++k) + ')';
+    used[out.toLowerCase()] = true;
+    return out;
+  }
+
+  function columnWidths(rows) {
+    var w = [];
+    for (var r = 0; r < rows.length && r < 1000; r++) {
+      for (var c = 0; c < rows[r].length; c++) w[c] = Math.max(w[c] || 6, Math.min(60, cellText(rows[r][c]).length + 2));
+    }
+    return w.map(function (n) { return { wch: n || 6 }; });
+  }
+
+  function writeBook(X, sheets, bookType, header) {
+    var wb = X.utils.book_new(), used = {};
+    sheets.forEach(function (s) {
+      var ws = X.utils.aoa_to_sheet(s.rows.length ? s.rows : [[]]);
+      ws['!cols'] = columnWidths(s.rows);
+      if (header && s.rows.length > 1 && ws['!ref']) ws['!autofilter'] = { ref: ws['!ref'] };   // filter buttons on the header
+      X.utils.book_append_sheet(wb, ws, sheetName(s.name, used));
+    });
+    return X.write(wb, { type: 'array', bookType: bookType, compression: true });
+  }
+
+  /* ---------- data -> document ---------- */
+
+  function isNested(v) { return Array.isArray(v) ? v.length > 0 : isObject(v) && Object.keys(v).length > 0; }
+
+  function valueBlocks(v) {
+    if (!isNested(v)) return [{ type: 'para', inlines: [{ text: Array.isArray(v) ? '(empty list)' : isObject(v) ? '(empty)' : scalar(v) || '(empty)' }] }];
+    var items = Array.isArray(v)
+      ? v.map(function (item, i) { return itemBlocks(isNested(item) ? 'Item ' + (i + 1) : null, item); })
+      : Object.keys(v).map(function (k) { return itemBlocks(k, v[k]); });
+    return [{ type: 'list', ordered: false, start: 1, items: items }];
+  }
+
+  function itemBlocks(key, v) {
+    var label = key === null ? [] : [{ text: key, b: 1 }];
+    if (isNested(v)) return [{ type: 'para', inlines: label }].concat(valueBlocks(v));
+    var text = Array.isArray(v) ? '(empty list)' : isObject(v) ? '(empty)' : v === null ? 'null' : scalar(v);
+    return [{ type: 'para', inlines: label.length ? label.concat([{ text: ': ' + text }]) : [{ text: text || '""' }] }];
+  }
+
+  // Lists of records become a table; anything else a nested list of keys and values.
+  function valueDoc(value, layout, title) {
+    var rec = records(value);
+    var tabular = Array.isArray(rec) && rec.length > 0 && rec.every(function (r) { return isObject(r) || Array.isArray(r); });
+    if (layout === 'table' || (layout !== 'list' && tabular)) {
+      var rows = jsonToRows(value), header = !(Array.isArray(rec) && rec.every(Array.isArray));
+      return { title: title, blocks: [QC.doc.tableBlock(rows, header)] };
+    }
+    return { title: title, blocks: valueBlocks(value) };
+  }
+
+  function hasPictures(blocks) {
+    return blocks.some(function (b) {
+      if (b.inlines) return b.inlines.some(function (r) { return r.img; });
+      if (b.blocks) return hasPictures(b.blocks);
+      if (b.items) return b.items.some(hasPictures);
+      if (b.rows) return b.rows.some(function (r) { return r.some(function (c) { return c.some(function (x) { return x.img; }); }); });
+      return false;
     });
   }
 
-  // Rendered Markdown HTML -> readable plain text.
-  function htmlToText(html) {
-    return decodeEntities(html
-      .replace(/<li[^>]*>/gi, '- ')
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/(p|h[1-6]|blockquote|pre|tr)>/gi, '\n')
-      .replace(/<\/t[dh]>\s*/gi, '\t')
-      .replace(/<tr[^>]*>\s*/gi, '')
-      .replace(/<[^>]*>/g, ''))
-      .replace(/[ \t]+\n/g, '\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim() + '\n';
-  }
+  /* ---------- convert ---------- */
 
-  /* ---------- task ---------- */
+  var ENCODING_NAMES = { 'utf-8': 'UTF-8', 'utf-16le': 'UTF-16', 'utf-16be': 'UTF-16', 'windows-1251': 'Windows-1251', 'windows-1252': 'Windows-1252' };
 
-  async function readText(file) {
-    return new TextDecoder('utf-8').decode(await file.arrayBuffer()); // strips a UTF-8 BOM
-  }
+  function baseName(name) { return (name || 'Document').replace(/\.[^.]+$/, ''); }
 
-  function parseJSON(text) {
-    try { return JSON.parse(text); }
-    catch (e) { throw QC.error('decode', 'Not valid JSON.'); }
-  }
-
-  function title(name) { return (name || 'Document').replace(/\.[^.]+$/, ''); }
-
-  // Returns { blob, rows?, note? }
-  async function convert(file, opts, progress) {
-    var from = opts.from, to = opts.to, X, rows, out, note = '', count;
-    progress(0.1);
-
-    if (from === 'xlsx') {
-      X = await sheetjs();
-      progress(0.3);
-      var book;
-      try { book = readXlsx(X, await file.arrayBuffer(), to === 'csv'); }
-      catch (e) { throw e.code ? e : QC.error('decode', 'Could not read this workbook.'); }
-      rows = book.rows;
-      if (book.sheets > 1) note = 'first sheet only (of ' + book.sheets + ')';
-    } else {
-      var text = await readText(file);
-      if (from === 'csv') rows = parseCSV(text);
-      else if (from === 'json') rows = jsonToRows(parseJSON(text));
+  // file -> { shape: 'table' | 'value' | 'doc', ... }
+  async function read(file, from, to, o, name) {
+    var info = {}, notes = [];
+    if (SHEET_IN[from]) {
+      var X = await sheetjs(from === 'xls');
+      var book = readBook(X, await file.arrayBuffer(), to === 'csv' || to === 'tsv');
+      info.sheets = book.names;
+      var all = o.sheet === 'all' && to !== 'csv' && to !== 'tsv';
+      var index = Math.min(Math.max(0, parseInt(o.sheet, 10) || 0), book.names.length - 1);
+      var sheets = all ? book.names.map(function (n, i) { return { name: n, rows: book.rows(i) }; })
+        : [{ name: book.names[index], rows: book.rows(index) }];
+      if (!all && book.names.length > 1) notes.push('sheet ' + (index + 1) + ' of ' + book.names.length);
+      return { shape: 'table', sheets: sheets, typed: true, info: info, notes: notes };
     }
+    if (from === 'docx') {
+      var doc = await QC.docx.read(await file.arrayBuffer(), { images: to === 'html' });
+      if (doc.pictures && to !== 'html') notes.push(doc.pictures === 1 ? 'picture left out' : doc.pictures + ' pictures left out');
+      return { shape: 'doc', doc: doc, info: info, notes: notes };
+    }
+    var decoded = QC.markup.decode(await file.arrayBuffer(), o.encoding), text = decoded.text;
+    info.encoding = decoded.encoding;
+    if (decoded.encoding !== 'utf-8') notes.push('read as ' + (ENCODING_NAMES[decoded.encoding] || decoded.encoding));
+    switch (from) {
+      case 'csv':
+      case 'tsv':
+        var delim = from === 'tsv' ? '\t' : o.delimiter && o.delimiter !== 'auto' ? o.delimiter : detectDelimiter(text);
+        info.delimiter = delim;
+        return { shape: 'table', sheets: [{ name: name, rows: parseCSV(text, delim) }], typed: false, info: info, notes: notes };
+      case 'json': return { shape: 'value', value: parseJSON(text), info: info, notes: notes };
+      case 'yaml': return { shape: 'value', value: await parseYaml(text), info: info, notes: notes };
+      case 'xml': return { shape: 'value', value: xmlToValue(text), info: info, notes: notes };
+      case 'txt': return { shape: 'doc', doc: QC.doc.fromText(text), info: info, notes: notes };
+      case 'md': return { shape: 'doc', markdown: text, info: info, notes: notes };
+      case 'html':
+        if (!TABLE_OUT[to] && !VALUE_OUT[to]) return { shape: 'doc', doc: QC.doc.fromHtml(text, { mainOnly: o.mainOnly }), info: info, notes: notes };
+        var tables = QC.doc.fromHtml(text).blocks.filter(function (b) { return b.type === 'table'; });
+        info.tables = tables.map(function (t) {
+          return { rows: t.rows.length, cols: t.rows.reduce(function (n, r) { return Math.max(n, r.length); }, 0) };
+        });
+        if (!tables.length) throw QC.error('decode', 'No tables found on this page.');
+        var ti = Math.min(Math.max(0, parseInt(o.table, 10) || 0), tables.length - 1);
+        if (tables.length > 1) notes.push('table ' + (ti + 1) + ' of ' + tables.length);
+        var rows = tables[ti].rows.map(function (r) { return r.map(function (c) { return QC.doc.plain(c); }); });
+        return { shape: 'table', sheets: [{ name: name, rows: rows }], typed: false, info: info, notes: notes };
+    }
+    throw QC.error('unsupported', 'Unsupported format.');
+  }
+
+  async function convert(file, opts, progress) {
+    var from = opts.from, to = opts.to, o = Object.assign(defaults(), opts.doc || {});
+    var fin = QC.formats.get(from), fout = QC.formats.get(to);
+    if (!fin || !fout || fin.outputs.indexOf(to) === -1) {
+      throw QC.error('unsupported', 'Can\'t convert ' + String(from).toUpperCase() + ' to ' + String(to).toUpperCase() + '.');
+    }
+    var name = baseName(file.name);
+    progress(0.1);
+    var src = await read(file, from, to, o, name);
     progress(0.6);
 
-    switch (from + '>' + to) {
-      case 'csv>json':
-      case 'xlsx>json':
-        var objects = rowsToObjects(rows, from === 'csv');
-        count = objects.length;
-        out = JSON.stringify(objects, null, 2) + '\n';
-        break;
-      case 'json>csv':
-      case 'xlsx>csv':
-        count = Math.max(0, rows.length - 1);
-        out = '﻿' + toCSV(rows); // BOM so Excel opens UTF-8 correctly
-        break;
-      case 'csv>xlsx':
-      case 'json>xlsx':
-        X = await sheetjs();
-        count = Math.max(0, rows.length - 1);
-        out = writeXlsx(X, from === 'csv' ? inferRows(rows) : rows);
-        break;
-      case 'txt>html':
-        out = htmlPage(title(file.name), textToHtml(text), opts.page);
-        break;
-      case 'md>html':
-        out = htmlPage(title(file.name), await markdownToHtml(text), opts.page);
-        break;
-      case 'md>txt':
-        out = htmlToText(await markdownToHtml(text));
-        break;
-      default:
-        throw QC.error('unsupported', 'Can\'t convert ' + from.toUpperCase() + ' to ' + to.toUpperCase() + '.');
+    var out, count, table = null, header = true, page = null;
+    var headerRow = src.shape === 'table' ? !!o.header : true;
+    var infer = src.shape === 'table' && !src.typed && o.types;
+
+    if (TABLE_OUT[to]) {
+      var sheets = src.shape === 'table' ? src.sheets
+        : src.shape === 'value' ? [{ name: name, rows: jsonToRows(src.value) }] : null;
+      if (!sheets) throw QC.error('unsupported', 'Can\'t convert this to a table.');
+      if (to === 'csv' || to === 'tsv') {
+        out = toCSV(sheets[0].rows, to === 'tsv' ? '\t' : o.csvDelimiter === ';' ? ';' : ',');
+        if (o.bom) out = '﻿' + out;               // so Excel reads UTF-8 text correctly
+      } else {
+        var X = await sheetjs(false);
+        out = writeBook(X, sheets.map(function (s) { return { name: s.name, rows: infer ? s.rows.map(function (r, i) { return headerRow && !i ? r : r.map(inferValue); }) : s.rows }; }),
+          to, headerRow);
+      }
+      count = sheets.reduce(function (n, s) { return n + Math.max(0, s.rows.length - (headerRow ? 1 : 0)); }, 0);
+      table = sheets[0].rows.slice(0, PREVIEW_ROWS + 1);
+      header = headerRow;
+    } else if (VALUE_OUT[to]) {
+      var value;
+      if (src.shape === 'value') value = o.sortKeys ? sortKeys(src.value) : src.value;
+      else if (src.shape === 'table') {
+        value = src.sheets.length === 1 ? rowsToValue(src.sheets[0].rows, headerRow, infer) : src.sheets.reduce(function (acc, s) {
+          acc[s.name] = rowsToValue(s.rows, headerRow, infer);
+          return acc;
+        }, Object.create(null));
+      } else throw QC.error('unsupported', 'Can\'t convert a document to data.');
+      if (to === 'json') out = toJSON(value, o.indent);
+      else if (to === 'yaml') out = await toYaml(value, o.indent);
+      else out = valueToXml(value, o.indent, src.shape === 'table' ? 'row' : 'item');
+      if (Array.isArray(value)) count = value.length;
+      else if (Array.isArray(records(value))) count = records(value).length;
+    } else {
+      var doc;
+      if (src.shape === 'doc') doc = src.doc || (to === 'html' ? null : await QC.doc.fromMarkdown(src.markdown));
+      else if (src.shape === 'table') {
+        doc = { title: name, blocks: [] };
+        src.sheets.forEach(function (s) {
+          if (src.sheets.length > 1) doc.blocks.push({ type: 'heading', level: 2, inlines: [{ text: s.name }] });
+          doc.blocks.push(QC.doc.tableBlock(s.rows, headerRow));
+        });
+        count = src.sheets.reduce(function (n, s) { return n + Math.max(0, s.rows.length - (headerRow ? 1 : 0)); }, 0);
+      } else doc = valueDoc(src.value, o.layout, name);
+      var title = (doc && doc.title) || name;
+      var wide = src.shape !== 'doc';                  // tables get the whole page width
+      if (to === 'html') {
+        var body = doc ? QC.doc.toHtml(doc) : await QC.doc.markdownHtml(src.markdown);
+        out = QC.doc.htmlPage(title, body, opts.page, wide);
+      } else if (to === 'md') {
+        out = QC.doc.toMarkdown(doc);
+        page = QC.doc.htmlPage(title, QC.doc.toHtml(doc), null, wide);
+      } else if (to === 'txt') {
+        out = QC.doc.toText(doc);
+      } else {
+        out = await QC.docx.write(doc, { font: o.docxFont, size: o.docxSize });
+        page = QC.docx.preview(doc, { font: o.docxFont, size: o.docxSize });
+        if (hasPictures(doc.blocks)) src.notes.push('pictures not included');
+      }
     }
     progress(0.95);
-    var mime = QC.formats.get(to).mime;
-    if (typeof out === 'string' && to !== 'xlsx') mime += ';charset=utf-8';
-    // First rows for the page to show as a table (header + up to PREVIEW_ROWS).
-    var preview = rows ? rows.slice(0, PREVIEW_ROWS + 1) : undefined;
-    return { blob: new Blob([out], { type: mime }), rows: count, note: note, preview: preview };
+    var mime = fout.mime;
+    if (typeof out === 'string') mime += ';charset=utf-8';
+    if (page && page.length > MAX_PREVIEW_HTML) page = null;
+    return {
+      blob: out instanceof Blob ? out : new Blob([out], { type: mime }),
+      rows: count, note: src.notes.join(' · '),
+      preview: table || undefined, previewHeader: header, previewHtml: page || undefined, info: src.info
+    };
   }
 
   return {
-    convert: convert, parseCSV: parseCSV, toCSV: toCSV, detectDelimiter: detectDelimiter,
-    rowsToObjects: rowsToObjects, jsonToRows: jsonToRows, inferValue: inferValue, htmlToText: htmlToText,
-    textOn: textOn, googleFontUrl: googleFontUrl
+    convert: convert, defaults: defaults, settingsFor: settingsFor,
+    parseCSV: parseCSV, toCSV: toCSV, detectDelimiter: detectDelimiter, rowsToObjects: rowsToObjects,
+    jsonToRows: jsonToRows, inferValue: inferValue, records: records,
+    xmlToValue: xmlToValue, valueToXml: valueToXml, parseJSON: parseJSON
   };
 }, { worker: true });

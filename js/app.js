@@ -12,7 +12,7 @@ QC.define('app', function (QC) {
   var panel = null;          // { item, ctrl } for the one open advanced panel
   var wide = window.matchMedia('(min-width: 1024px)'); // must match the breakpoint in style.css
   var zipUrl = null;
-  var caps = { offscreen: false, webp: false };
+  var caps = { offscreen: false, webp: false, video: false };
   var el = {};
 
   /* ---------- helpers ---------- */
@@ -59,11 +59,15 @@ QC.define('app', function (QC) {
 
   // Same key = same output, so a cached result can be reused.
   function settingsKey(item) {
-    return JSON.stringify([item.target, item.kind === 'image' ? item.settings : [item.editVersion, item.page]]);
+    var h = QC.formats.handler(item.type, item.target);
+    return JSON.stringify([item.target, h === 'image' ? item.settings : h === 'media' ? [item.video, item.settings.background]
+      : [item.editVersion, item.page, item.doc]]);
   }
 
+  // Edited text is saved as UTF-8, whatever the original file's encoding was.
   function jobOptions(item) {
-    return { from: item.type, to: item.target, settings: Object.assign({}, item.settings), page: Object.assign({}, item.page) };
+    return { from: item.type, to: item.target, settings: Object.assign({}, item.settings), page: Object.assign({}, item.page),
+      doc: Object.assign({}, item.doc, item.editedText != null ? { encoding: 'utf-8' } : {}), video: Object.assign({}, item.video) };
   }
 
   // The file to convert: the original, or the user's edited text.
@@ -88,6 +92,7 @@ QC.define('app', function (QC) {
       c.width = c.height = 1;
       caps.webp = c.toDataURL('image/webp').indexOf('data:image/webp') === 0;
     } catch (e) { caps.webp = false; }
+    caps.video = QC.video.supported();
   }
 
   /* ---------- items ---------- */
@@ -111,10 +116,13 @@ QC.define('app', function (QC) {
       status: 'idle', progress: 0, error: '', permanent: false, run: 0,
       result: null, outdated: false, pending: null, cache: null,
       outBase: null, editedText: null, editVersion: 0,
-      page: { background: '#ffffff', font: 'system', weights: false }  // HTML output style
+      page: { background: '#ffffff', font: 'system', weights: false },  // HTML output style
+      doc: QC.data.defaults(), meta: null,                               // data/document settings; sheets and tables found
+      video: QC.video.defaults()                                         // trim, size, frame rate, quality, volume
     };
     if (!f) fail(item, 'Unsupported format.', true);
     else if (f.kind === 'image' && !caps.offscreen) fail(item, 'Images need a newer browser (no OffscreenCanvas).', true);
+    else if ((f.kind === 'video' || f.kind === 'audio') && !caps.video) fail(item, 'Video and audio need a newer browser: Chrome, Edge, Firefox 130+ or Safari 16.4+.', true);
     buildRow(item, f);
     return item;
   }
@@ -142,9 +150,12 @@ QC.define('app', function (QC) {
     if (item.file.size > LARGE_FILE) q('.file-warn').hidden = false;
 
     var select = item.dom.target;
-    var outs = f ? QC.formats.outputsFor(f.key, caps) : [];
-    outs.forEach(function (o) { select.appendChild(h('option', { value: o, text: QC.formats.get(o).label })); });
-    if (!outs.length) select.appendChild(h('option', { text: '—' }));
+    var groups = f ? QC.formats.groupsFor(f.key, caps) : [];
+    groups.forEach(function (g) {                    // Tables / Data / Documents
+      var parent = g.label ? select.appendChild(h('optgroup', { label: g.label })) : select;
+      g.keys.forEach(function (o) { parent.appendChild(h('option', { value: o, text: QC.formats.get(o).label })); });
+    });
+    if (!groups.length) select.appendChild(h('option', { text: '—' }));
     select.value = item.target || '';
     select.disabled = item.permanent;
     select.addEventListener('change', function () {
@@ -272,7 +283,9 @@ QC.define('app', function (QC) {
   function doneText(item) {
     var r = item.result.info, size = item.result.blob.size;
     var parts = [formatBytes(size) + ' (' + percentChange(item.file.size, size) + ')'];
-    if (item.kind === 'image') {
+    if (r.duration) {
+      parts.push(Math.floor(r.duration / 60) + ':' + ('0' + (r.duration % 60).toFixed(1)).slice(-4));
+    } else if (item.kind === 'image') {
       parts.push(r.width + ' × ' + r.height);
       if (r.quality && item.settings.targetOn && QC.image.targetBytes(item.settings)) parts.push('quality ' + r.quality);
     } else if (typeof r.rows === 'number') {
@@ -300,9 +313,13 @@ QC.define('app', function (QC) {
       : selection.size === 1 || list.length === 1 ? 'Convert file' : 'Convert all files';
     el.convert.disabled = !todo;
     el.convert.textContent = busy && !todo ? 'Converting…' : label;
-    var done = list.filter(function (i) { return i.status === 'done'; }).length;
-    el.zip.hidden = done < 2;
+    var zipCount = zipItems().length;
+    el.zip.hidden = zipCount < 2;
+    if (!el.zip.disabled) el.zip.textContent = selection.size ? 'Download ' + zipCount + ' selected (ZIP)' : 'Download all (ZIP)';
   }
+
+  // Converted files the ZIP holds: the selected ones, or all when none are selected.
+  function zipItems() { return scope().filter(function (i) { return i.status === 'done'; }); }
 
   function canConvert(item) {
     return !item.permanent && (item.status === 'idle' || item.status === 'failed');
@@ -335,7 +352,9 @@ QC.define('app', function (QC) {
         else renderProgress(item);
       }
     };
-    (item.kind === 'image' ? QC.pool.runImage(job) : QC.pool.run(job)).then(function (r) {
+    var h = QC.formats.handler(item.type, item.target);
+    job.stoppable = h === 'media';                     // minutes long: stopped if the file changes or goes
+    (h === 'image' ? QC.pool.runImage(job) : QC.pool.run(job)).then(function (r) {
       if (run !== item.run || !items.has(item.id)) return;
       item.cache = { key: key, result: r };
       finish(item, r);
@@ -357,6 +376,7 @@ QC.define('app', function (QC) {
     }
     render(item);
     updateToolbar();
+    if (panel && panel.item === item) panel.ctrl.result();
   }
 
   function setResult(item, r) {
@@ -366,9 +386,8 @@ QC.define('app', function (QC) {
   }
 
   function downloadZip() {
-    var done = Array.from(items.values()).filter(function (i) { return i.status === 'done'; });
+    var done = zipItems();
     if (done.length < 2) return;
-    var label = el.zip.textContent;
     el.zip.disabled = true;
     el.zip.textContent = 'Building ZIP…';
     QC.pool.run({
@@ -386,7 +405,7 @@ QC.define('app', function (QC) {
       window.alert('Could not build the ZIP: ' + (err.message || 'unknown error'));
     }).then(function () {
       el.zip.disabled = false;
-      el.zip.textContent = label;
+      updateToolbar();
     });
   }
 
@@ -404,6 +423,7 @@ QC.define('app', function (QC) {
       invalidate(item);
     },
     onApplyAll: applyToAll,
+    reopen: function (item) { closePanel(true); openPanelFor(item); },
     onClose: retract,
     // Renaming changes no content, so a finished result just gets the new name.
     onRename: function (item) {
@@ -415,6 +435,7 @@ QC.define('app', function (QC) {
       return copyTargets(item).scoped ? 'Copy settings to selected files' : 'Copy settings to all files';
     },
     outputs: function (item) { return QC.formats.outputsFor(item.type, caps); },
+    groups: function (item) { return QC.formats.groupsFor(item.type, caps); },
     outputName: function (item) { return nameFor(item, item.target); },
     sourceFile: sourceFile,
     settingsKey: settingsKey,
@@ -616,14 +637,24 @@ QC.define('app', function (QC) {
     copyTargets(source).list.forEach(function (item) {
       if (item === source || item.permanent) return;
       var touched = false;
-      if (source.kind === 'data' && item.kind === 'data' && JSON.stringify(item.page) !== JSON.stringify(source.page)) {
-        item.page = Object.assign({}, source.page);
+      if (source.kind === 'data' && item.kind === 'data') {
+        // Which sheet or table to read belongs to each file; everything else is copied.
+        var doc = Object.assign({}, source.doc, { sheet: item.doc.sheet, table: item.doc.table });
+        if (JSON.stringify(item.page) !== JSON.stringify(source.page) || JSON.stringify(item.doc) !== JSON.stringify(doc)) {
+          item.page = Object.assign({}, source.page);
+          item.doc = doc;
+          touched = true;
+        }
+      }
+      if (QC.formats.handler(source.type, source.target) === 'media' && QC.formats.handler(item.type, item.target) === 'media') {
+        // Where to trim belongs to each file; everything else is copied.
+        item.video = Object.assign({}, source.video, { start: item.video.start, end: item.video.end });
         touched = true;
       }
       if (source.kind === 'image' && item.kind === 'image') {
-        var own = {};
+        var own = {}, crop = { crop: item.settings.crop, cropRatio: item.settings.cropRatio };  // a crop fits one picture only
         RESIZE_KEYS.forEach(function (k) { own[k] = item.settings[k]; });
-        item.settings = JSON.parse(JSON.stringify(source.settings));
+        item.settings = Object.assign(JSON.parse(JSON.stringify(source.settings)), crop);
         if (keepSize) Object.assign(item.settings, own);
         touched = true;
       }

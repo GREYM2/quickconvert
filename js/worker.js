@@ -8,9 +8,15 @@ importScripts(
   'formats.js',
   'convert/zip.js',
   'convert/bmp.js',
+  'convert/tiff.js',
+  'convert/codecs.js',
   'convert/ico.js',
   'convert/image.js',
+  'convert/markup.js',
+  'convert/doc.js',
+  'convert/docx.js',
   'convert/data.js',
+  'convert/video.js',
   'convert/jobs.js'
 );
 QC.jobs.listen(self);

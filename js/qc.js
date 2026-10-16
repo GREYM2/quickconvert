@@ -24,8 +24,18 @@ function qcBootstrap(root) {
 
   // Pinned third-party libraries. Loaded on demand, never at page load.
   QC.libs = {
-    xlsx: 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.mini.min.js',
-    marked: 'https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js'
+    xlsx: 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.mini.min.js',      // XLSX, ODS, CSV
+    xlsxFull: 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js',  // + old Excel .xls (950 KB)
+    marked: 'https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js',
+    yaml: 'https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js',
+    mediabunny: 'https://cdn.jsdelivr.net/npm/mediabunny@1.58.1/dist/bundles/mediabunny.min.cjs',  // video (680 KB)
+    gifenc: 'https://cdn.jsdelivr.net/npm/gifenc@1.0.3/dist/gifenc.js',                             // GIF writer
+    mp3Encoder: 'https://cdn.jsdelivr.net/npm/@mediabunny/mp3-encoder@1.58.1/dist/bundles/mediabunny-mp3-encoder.min.js',  // LAME (310 KB)
+    aacEncoder: 'https://cdn.jsdelivr.net/npm/@mediabunny/aac-encoder@1.58.1/dist/bundles/mediabunny-aac-encoder.min.js',  // for Firefox (990 KB)
+    flacEncoder: 'https://cdn.jsdelivr.net/npm/@mediabunny/flac-encoder@1.58.1/dist/bundles/mediabunny-flac-encoder.min.js', // (320 KB)
+    heif: 'https://cdn.jsdelivr.net/npm/libheif-js@1.19.8/libheif-wasm/libheif-bundle.js',          // HEIC photos (1.4 MB)
+    utif: 'https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js',                                          // TIFF reader
+    pako: 'https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako_inflate.min.js'                          // for UTIF
   };
 
   var loaded = {};
@@ -48,6 +58,26 @@ function qcBootstrap(root) {
       throw QC.error('lib', 'Could not load a helper library. Check your connection.');
     });
     return loaded[url];
+  };
+
+  // Load a CommonJS bundle once (libraries without a plain script build) and return its exports.
+  // globals: names the bundle expects to find, e.g. { Mediabunny: exports }.
+  var cjs = {};
+  QC.loadCjs = function (url, globals) {
+    if (cjs[url]) return cjs[url];
+    cjs[url] = fetch(url).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.text();
+    }).then(function (code) {
+      var module = { exports: {} }, names = Object.keys(globals || {});
+      Function.apply(null, ['module', 'exports'].concat(names, [code]))
+        .apply(null, [module, module.exports].concat(names.map(function (k) { return globals[k]; })));
+      return module.exports;
+    }).catch(function () {
+      delete cjs[url];
+      throw QC.error('lib', 'Could not load a helper library. Check your connection.');
+    });
+    return cjs[url];
   };
 
   // Errors carry a short `code` so the page can react (e.g. retry decoding).
